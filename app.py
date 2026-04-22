@@ -523,43 +523,6 @@ Keep it concise and executive-level."""
 
                         # WHY THIS SCORE — cached so it only calls the API once per candidate
                         with st.expander("🧠 Why this score?"):
-                            if score < 75:
-
-    with st.expander("❌ Why not selected?"):
-
-        reject_key = f"reject_reason_{name}"
-
-        if reject_key not in st.session_state:
-
-            with st.spinner("Analyzing candidate gaps..."):
-
-                response = st.session_state.llm.invoke(
-                    f"""
-You are a senior recruiter.
-
-Job Description:
-{st.session_state.saved_jd}
-
-Candidate Summary:
-{cand.get('summary', '')}
-
-Candidate Score:
-{score}
-
-Explain:
-
-- missing skills
-- weaknesses
-- hiring concerns
-- major gaps
-
-Keep it concise and professional.
-"""
-                )
-
-                st.session_state[reject_key] = response.content
-
-        st.write(st.session_state[reject_key])
                             cache_key = f"explain_{name}"
                             if cache_key not in st.session_state:
                                 with st.spinner("Analysing…"):
