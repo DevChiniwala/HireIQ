@@ -22,7 +22,7 @@ st.set_page_config(
 if "llm" not in st.session_state:
     try:
         st.session_state.llm = ChatGroq(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.3-70b-versatile",
             temperature=0.1,
             api_key=st.secrets["GROQ_API_KEY"],
         )
@@ -36,9 +36,9 @@ st.markdown(
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap');
 :root {
-    --bg:     #0D1117; --card:   #161B22; --border: #30363D;
-    --text:   #E2E8F0; --muted:  #94A3B8; --accent: #007BFF;
-    --glow:   rgba(0,123,255,0.25);
+    --bg:#0D1117; --card:#161B22; --border:#30363D;
+    --text:#E2E8F0; --muted:#94A3B8; --accent:#007BFF;
+    --glow:rgba(0,123,255,0.25);
 }
 html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .stApp{background-color:var(--bg);background-image:radial-gradient(var(--border) 0.5px,transparent 0.5px);background-size:15px 15px;}
@@ -74,7 +74,13 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .bubble.user{background:var(--accent);color:#fff;margin-left:auto;border-bottom-right-radius:0;}
 .bubble.assistant{background:#1e2530;color:var(--text);border-bottom-left-radius:0;}
 .cname{font-size:1.6rem;font-weight:700;color:#fff;margin:0;}
+.action-tag{display:inline-block;padding:3px 12px;border-radius:8px;font-size:.83rem;font-weight:600;background:rgba(0,123,255,.12);color:#007BFF;border:1px solid rgba(0,123,255,.3);}
 #MainMenu,footer{visibility:hidden;}
+
+/* FIX uploadupload: zero out all text in the button, inject clean label via ::after */
+[data-testid="stFileUploaderDropzoneButton"]{font-size:0!important;color:transparent!important;}
+[data-testid="stFileUploaderDropzoneButton"] *{font-size:0!important;color:transparent!important;}
+[data-testid="stFileUploaderDropzoneButton"]::after{content:"Browse files";font-size:.88rem;font-weight:600;color:#E2E8F0;}
 </style>
 """,
     unsafe_allow_html=True,
@@ -128,12 +134,33 @@ def match_label(score):
     return "🔴 Low Match"
 
 
+def next_action(score):
+    if score >= 85:
+        return "📞 Schedule final interview"
+    if score >= 70:
+        return "🧠 Conduct technical assessment"
+    if score >= 50:
+        return "📋 Review manually"
+    return "❌ Reject candidate"
+
+
 def job_title(jd):
     for line in jd.splitlines():
         s = line.strip()
         if s:
             return s[:80]
     return "the position"
+
+
+def llm_cached(key, prompt):
+    """Call LLM only once per key; return cached result thereafter."""
+    if key not in st.session_state:
+        try:
+            resp = st.session_state.llm.invoke(prompt)
+            st.session_state[key] = resp.content
+        except Exception as e:
+            st.session_state[key] = f"Could not generate: {e}"
+    return st.session_state[key]
 
 
 # ─── Callbacks ────────────────────────────────────────────────────────────────
@@ -260,7 +287,7 @@ if st.session_state.step == "upload":
     with col1:
         st.markdown("**📝 Job Description**")
         st.session_state.saved_jd = st.text_area(
-            "jd_input",
+            "Job Description",
             value=st.session_state.saved_jd,
             placeholder="Paste the full job description here…",
             height=320,
@@ -268,8 +295,11 @@ if st.session_state.step == "upload":
         )
     with col2:
         st.markdown("**👥 Upload Candidate Resumes (PDF)**")
+        # ✅ FIX: label must NOT contain the word "upload" — Streamlit
+        # appends the label text inside the Browse button, causing "uploadupload".
+        # Using a neutral label + label_visibility="collapsed" solves it.
         new_files = st.file_uploader(
-            "pdf_upload",
+            "Candidate PDFs",
             type=["pdf"],
             accept_multiple_files=True,
             label_visibility="collapsed",
@@ -334,7 +364,7 @@ elif st.session_state.step == "weighting":
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.step == "results":
 
-    # Top bar
+    # ── Top bar ───────────────────────────────────────────────────────────────
     ta, tb = st.columns([6, 1])
     with ta:
         st.success(
@@ -345,19 +375,17 @@ elif st.session_state.step == "results":
         st.button("🔄 Start Over", on_click=go_back, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── FEATURE 1: Recruiter Dashboard Metrics ────────────────────────────────
+    # ── FEATURE: Recruiter Dashboard Metrics ─────────────────────────────────
     scores = [
         c["overall_score"]
         for c in st.session_state.candidates
         if "Error:" not in c["name"]
     ]
-
     if scores:
         avg_score = round(sum(scores) / len(scores), 1)
         strong_matches = len([s for s in scores if s >= 75])
 
         st.markdown("## 📊 Hiring Insights")
-
         m1, m2, m3 = st.columns(3)
         with m1:
             st.metric("Candidates", len(scores))
@@ -365,6 +393,15 @@ elif st.session_state.step == "results":
             st.metric("Average Score", avg_score)
         with m3:
             st.metric("Strong Matches", strong_matches)
+
+        # FEATURE: Score Distribution Chart
+        st.markdown("### 📈 Score Distribution")
+        chart_data = {
+            c["name"]: c["overall_score"]
+            for c in st.session_state.candidates
+            if "Error:" not in c["name"]
+        }
+        st.bar_chart(chart_data)
 
     # ── Top candidate banner ──────────────────────────────────────────────────
     if st.session_state.candidates:
@@ -374,25 +411,19 @@ elif st.session_state.step == "results":
             f"🏆 **Top Candidate:** {top['name']} — {top_score} / 100  ·  {decision(top_score)}"
         )
 
-        # ── FEATURE 2: Why Top Candidate Won ─────────────────────────────────
+        # FEATURE: Why top candidate won (cached)
         with st.expander("🏆 Why was this candidate ranked #1?"):
-            best_key = "top_candidate_reason"
-            if best_key not in st.session_state:
-                with st.spinner("Analyzing top candidate..."):
-                    explanation = st.session_state.llm.invoke(
-                        f"""You are a senior hiring director.
+            with st.spinner("Analysing top candidate…"):
+                result = llm_cached(
+                    "top_candidate_reason",
+                    f"""You are a senior hiring director.
 
 Job Description:
 {st.session_state.saved_jd}
 
-Top Candidate:
-{top['name']}
-
-Candidate Summary:
-{top['summary']}
-
-Candidate Score:
-{top_score}
+Top Candidate: {top['name']}
+Summary: {top['summary']}
+Score: {top_score}
 
 Explain:
 - Why this candidate ranked highest
@@ -401,10 +432,9 @@ Explain:
 - Potential risks
 - Final recommendation
 
-Keep it concise and executive-level."""
-                    )
-                    st.session_state[best_key] = explanation.content
-            st.write(st.session_state[best_key])
+Keep it concise and executive-level.""",
+                )
+            st.write(result)
 
     # ── Shortlist bar ─────────────────────────────────────────────────────────
     if st.session_state.shortlist:
@@ -413,19 +443,30 @@ Keep it concise and executive-level."""
             for n in st.session_state.shortlist
         )
         st.markdown(
-            f"<div style='margin-bottom:1rem'>📋 <b>Shortlisted:</b> {pills}</div>",
+            f"<div style='margin-bottom:.5rem'>📋 <b>Shortlisted:</b> {pills}</div>",
             unsafe_allow_html=True,
         )
 
-        # ── FEATURE 5: Download Shortlist ─────────────────────────────────────
-        shortlist_text = "\n".join(st.session_state.shortlist)
-        st.download_button(
-            "📥 Download Shortlist",
-            shortlist_text,
-            file_name="shortlist.txt",
+        # FEATURE: Export shortlist with recruiter notes
+        export_data = "\n".join(
+            f"Candidate: {n}\nRecruiter Notes:\n{st.session_state.get(f'notes_{n}', '(none)')}\n{'-'*40}"
+            for n in st.session_state.shortlist
         )
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            st.download_button(
+                "📥 Download Shortlist",
+                "\n".join(st.session_state.shortlist),
+                file_name="shortlist.txt",
+            )
+        with sc2:
+            st.download_button(
+                "📥 Export Shortlist + Notes",
+                export_data,
+                file_name="shortlist_notes.txt",
+            )
 
-    tab1, tab2, tab3 = st.tabs(["🏆 Leaderboard", "🤝 Compare", "✉️ Emails"])
+    tab1, tab2, tab3 = st.tabs(["🏆 Leaderboard", "🤝 Compare", "✉️ Emails & Report"])
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 1 — LEADERBOARD
@@ -464,12 +505,17 @@ Keep it concise and executive-level."""
                     # Progress bar
                     st.progress(score / 100.0)
 
-                    # Match + Decision
-                    ml, dl = st.columns(2)
+                    # Match / Decision / Next Action
+                    ml, dl, al = st.columns(3)
                     with ml:
                         st.markdown(f"**Match:** {match_label(score)}")
                     with dl:
                         st.markdown(f"**Decision:** {decision(score)}")
+                    with al:
+                        st.markdown(
+                            f"**Action:** <span class='action-tag'>{next_action(score)}</span>",
+                            unsafe_allow_html=True,
+                        )
 
                     # Summary
                     st.markdown(
@@ -494,41 +540,53 @@ Keep it concise and executive-level."""
                             with si1:
                                 if matched:
                                     st.markdown("**🔥 Top matched skills:**")
-                                    tags = " ".join(
-                                        f"<span class='skill-tag skill-match'>{s}</span>"
-                                        for s in matched
+                                    st.markdown(
+                                        " ".join(
+                                            f"<span class='skill-tag skill-match'>{s}</span>"
+                                            for s in matched
+                                        ),
+                                        unsafe_allow_html=True,
                                     )
-                                    st.markdown(tags, unsafe_allow_html=True)
                             with si2:
                                 if missing:
                                     st.markdown("**⚠️ Key gaps:**")
-                                    tags = " ".join(
-                                        f"<span class='skill-tag skill-missing'>{s}</span>"
-                                        for s in missing
+                                    st.markdown(
+                                        " ".join(
+                                            f"<span class='skill-tag skill-missing'>{s}</span>"
+                                            for s in missing
+                                        ),
+                                        unsafe_allow_html=True,
                                     )
-                                    st.markdown(tags, unsafe_allow_html=True)
 
                         st.markdown(
                             "<div style='height:.4rem'></div>", unsafe_allow_html=True
                         )
 
                         # SHORTLIST BUTTON
-                        if name not in st.session_state.shortlist:
-                            if st.button("⭐ Add to Shortlist", key=f"short_{rank}"):
-                                st.session_state.shortlist.append(name)
-                                st.success(f"✅ {name} added to shortlist!")
-                                st.rerun()
-                        else:
-                            st.markdown("⭐ **In Shortlist**")
+                        sl_col, note_col = st.columns([1, 3])
+                        with sl_col:
+                            if name not in st.session_state.shortlist:
+                                if st.button("⭐ Shortlist", key=f"short_{rank}"):
+                                    st.session_state.shortlist.append(name)
+                                    st.rerun()
+                            else:
+                                st.markdown("⭐ **Shortlisted**")
+                        with note_col:
+                            # FEATURE: Recruiter Notes
+                            st.text_area(
+                                "📝 Recruiter Notes",
+                                key=f"notes_{name}",
+                                placeholder="Add observations, concerns, interview notes…",
+                                height=68,
+                                label_visibility="collapsed",
+                            )
 
-                        # WHY THIS SCORE — cached so it only calls the API once per candidate
+                        # WHY THIS SCORE (cached)
                         with st.expander("🧠 Why this score?"):
-                            cache_key = f"explain_{name}"
-                            if cache_key not in st.session_state:
-                                with st.spinner("Analysing…"):
-                                    try:
-                                        resp = st.session_state.llm.invoke(
-                                            f"""You are a senior hiring manager.
+                            with st.spinner("Analysing…"):
+                                result = llm_cached(
+                                    f"explain_{name}",
+                                    f"""You are a senior hiring manager.
 
 Job Description:
 {st.session_state.saved_jd}
@@ -536,52 +594,40 @@ Job Description:
 Candidate Summary:
 {cand.get('summary', '')}
 
-Candidate Score: {score}/100
+Score: {score}/100
 
 Give a structured explanation:
 - Why this score?
-- Top strengths (bullet points)
+- Top strengths (bullets)
 - Weaknesses / risks
 - Missing skills
-- Final hiring recommendation (Hire / Maybe / Reject)
+- Final recommendation (Hire / Maybe / Reject)
 
-Keep it concise and practical."""
-                                        )
-                                        st.session_state[cache_key] = resp.content
-                                    except Exception as e:
-                                        st.session_state[cache_key] = (
-                                            f"Could not generate explanation: {e}"
-                                        )
-                            st.write(st.session_state[cache_key])
+Keep it concise.""",
+                                )
+                            st.write(result)
 
-                        # ── FEATURE 3: Why Not Selected ───────────────────────
+                        # WHY NOT SELECTED (for lower scores)
                         if score < 75:
                             with st.expander("❌ Why not selected?"):
-                                reject_key = f"reject_reason_{name}"
-                                if reject_key not in st.session_state:
-                                    with st.spinner("Analyzing weaknesses..."):
-                                        response = st.session_state.llm.invoke(
-                                            f"""Explain why this candidate may not be selected.
+                                with st.spinner("Analysing weaknesses…"):
+                                    result = llm_cached(
+                                        f"reject_{name}",
+                                        f"""Explain why this candidate may not be selected.
 
-Candidate:
-{cand['summary']}
-
-Score:
-{score}
-
-Job Description:
-{st.session_state.saved_jd}
+Candidate: {cand['summary']}
+Score: {score}
+Job Description: {st.session_state.saved_jd}
 
 Give:
-- missing skills
-- concerns
-- gaps
-- hiring risks
+- Missing skills
+- Concerns
+- Gaps
+- Hiring risks
 
-Keep it professional."""
-                                        )
-                                        st.session_state[reject_key] = response.content
-                                st.write(st.session_state[reject_key])
+Keep it professional and concise.""",
+                                    )
+                                st.write(result)
 
                         # XAI REQUIREMENT ANALYSIS
                         with st.expander("📊 Full XAI Requirement Analysis"):
@@ -717,21 +763,15 @@ Keep it professional."""
                                 )
                         st.markdown("---")
 
-                # ── FEATURE 4: AI Comparison Engine ──────────────────────────
-                if st.button("🤖 AI Compare Candidates"):
-                    compare_data = ""
-                    for sel in selected:
-                        d = lookup[sel]
-                        compare_data += f"""
-Candidate: {sel}
-
-Summary:
-{d['summary']}
-
-Score:
-{d['overall_score']}
-"""
-                    compare_prompt = f"""Compare these candidates for the following role.
+                # FEATURE: AI Comparison Engine
+                if st.button("🤖 AI Compare Selected Candidates"):
+                    compare_data = "\n\n".join(
+                        f"Candidate: {sel}\nScore: {lookup[sel]['overall_score']}\nSummary:\n{lookup[sel]['summary']}"
+                        for sel in selected
+                    )
+                    with st.spinner("Comparing candidates…"):
+                        resp = st.session_state.llm.invoke(
+                            f"""Compare these candidates for the following role.
 
 Job Description:
 {st.session_state.saved_jd}
@@ -740,27 +780,25 @@ Candidates:
 {compare_data}
 
 Give:
-- strongest candidate
-- biggest strengths
-- biggest weaknesses
-- hiring recommendation
-- final ranking
+- Strongest candidate and why
+- Each candidate's biggest strength
+- Each candidate's biggest weakness
+- Hiring recommendation
+- Final ranking (1st, 2nd, 3rd…)
 
 Keep it concise and recruiter-focused."""
-
-                    with st.spinner("Comparing candidates..."):
-                        response = st.session_state.llm.invoke(compare_prompt)
-
-                    st.markdown("## 🤖 AI Comparison Report")
-                    st.write(response.content)
+                        )
+                    st.markdown("### 🤖 AI Comparison Report")
+                    st.write(resp.content)
 
             elif len(selected) == 1:
                 st.info("Select at least one more candidate.")
 
     # ════════════════════════════════════════════════════════════════════════
-    # TAB 3 — EMAILS
+    # TAB 3 — EMAILS & HIRING REPORT
     # ════════════════════════════════════════════════════════════════════════
     with tab3:
+        # ── Email generation ─────────────────────────────────────────────────
         st.markdown("### ✉️ Email Generation Centre")
         valid_cands = [
             c for c in st.session_state.candidates if "Error:" not in c["name"]
@@ -814,3 +852,46 @@ Keep it concise and recruiter-focused."""
                             st.code(em["email_body"], language=None)
                     if not st.session_state.generated_emails.get("rejections"):
                         st.info("All candidates were invited — no rejections needed.")
+
+        # ── FEATURE: AI Hiring Report ─────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("## 📄 AI Hiring Report")
+
+        if st.button("📥 Generate Hiring Report", use_container_width=True):
+            report_data = "\n\n".join(
+                f"Candidate: {c['name']}\nScore: {c['overall_score']}\nSummary:\n{c['summary']}"
+                for c in st.session_state.candidates
+                if "Error:" not in c["name"]
+            )
+            with st.spinner("Generating executive report…"):
+                resp = st.session_state.llm.invoke(
+                    f"""You are a senior hiring consultant.
+
+Job Description:
+{st.session_state.saved_jd}
+
+Candidate Data:
+{report_data}
+
+Generate a professional hiring report including:
+- Top candidates (ranked)
+- Strongest strengths observed across applicants
+- Biggest skill gaps across applicants
+- Overall hiring recommendation
+- Final shortlist suggestions
+
+Keep it executive-style and concise."""
+                )
+                st.session_state["final_hiring_report"] = resp.content
+
+        if "final_hiring_report" in st.session_state:
+            st.text_area(
+                "Generated Hiring Report",
+                st.session_state["final_hiring_report"],
+                height=420,
+            )
+            st.download_button(
+                "📥 Download Report as .txt",
+                st.session_state["final_hiring_report"],
+                file_name="hireiq_report.txt",
+            )
