@@ -345,7 +345,28 @@ elif st.session_state.step == "results":
         st.button("🔄 Start Over", on_click=go_back, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # Top candidate banner
+    # ── FEATURE 1: Recruiter Dashboard Metrics ────────────────────────────────
+    scores = [
+        c["overall_score"]
+        for c in st.session_state.candidates
+        if "Error:" not in c["name"]
+    ]
+
+    if scores:
+        avg_score = round(sum(scores) / len(scores), 1)
+        strong_matches = len([s for s in scores if s >= 75])
+
+        st.markdown("## 📊 Hiring Insights")
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Candidates", len(scores))
+        with m2:
+            st.metric("Average Score", avg_score)
+        with m3:
+            st.metric("Strong Matches", strong_matches)
+
+    # ── Top candidate banner ──────────────────────────────────────────────────
     if st.session_state.candidates:
         top = st.session_state.candidates[0]
         top_score = clamp(top["overall_score"])
@@ -353,7 +374,39 @@ elif st.session_state.step == "results":
             f"🏆 **Top Candidate:** {top['name']} — {top_score} / 100  ·  {decision(top_score)}"
         )
 
-    # Shortlist bar
+        # ── FEATURE 2: Why Top Candidate Won ─────────────────────────────────
+        with st.expander("🏆 Why was this candidate ranked #1?"):
+            best_key = "top_candidate_reason"
+            if best_key not in st.session_state:
+                with st.spinner("Analyzing top candidate..."):
+                    explanation = st.session_state.llm.invoke(
+                        f"""You are a senior hiring director.
+
+Job Description:
+{st.session_state.saved_jd}
+
+Top Candidate:
+{top['name']}
+
+Candidate Summary:
+{top['summary']}
+
+Candidate Score:
+{top_score}
+
+Explain:
+- Why this candidate ranked highest
+- Biggest strengths
+- Hiring advantages
+- Potential risks
+- Final recommendation
+
+Keep it concise and executive-level."""
+                    )
+                    st.session_state[best_key] = explanation.content
+            st.write(st.session_state[best_key])
+
+    # ── Shortlist bar ─────────────────────────────────────────────────────────
     if st.session_state.shortlist:
         pills = "".join(
             f"<span class='shortlist-pill'>⭐ {n}</span>"
@@ -362,6 +415,14 @@ elif st.session_state.step == "results":
         st.markdown(
             f"<div style='margin-bottom:1rem'>📋 <b>Shortlisted:</b> {pills}</div>",
             unsafe_allow_html=True,
+        )
+
+        # ── FEATURE 5: Download Shortlist ─────────────────────────────────────
+        shortlist_text = "\n".join(st.session_state.shortlist)
+        st.download_button(
+            "📥 Download Shortlist",
+            shortlist_text,
+            file_name="shortlist.txt",
         )
 
     tab1, tab2, tab3 = st.tabs(["🏆 Leaderboard", "🤝 Compare", "✉️ Emails"])
@@ -462,6 +523,43 @@ elif st.session_state.step == "results":
 
                         # WHY THIS SCORE — cached so it only calls the API once per candidate
                         with st.expander("🧠 Why this score?"):
+                            if score < 75:
+
+    with st.expander("❌ Why not selected?"):
+
+        reject_key = f"reject_reason_{name}"
+
+        if reject_key not in st.session_state:
+
+            with st.spinner("Analyzing candidate gaps..."):
+
+                response = st.session_state.llm.invoke(
+                    f"""
+You are a senior recruiter.
+
+Job Description:
+{st.session_state.saved_jd}
+
+Candidate Summary:
+{cand.get('summary', '')}
+
+Candidate Score:
+{score}
+
+Explain:
+
+- missing skills
+- weaknesses
+- hiring concerns
+- major gaps
+
+Keep it concise and professional.
+"""
+                )
+
+                st.session_state[reject_key] = response.content
+
+        st.write(st.session_state[reject_key])
                             cache_key = f"explain_{name}"
                             if cache_key not in st.session_state:
                                 with st.spinner("Analysing…"):
@@ -492,6 +590,35 @@ Keep it concise and practical."""
                                             f"Could not generate explanation: {e}"
                                         )
                             st.write(st.session_state[cache_key])
+
+                        # ── FEATURE 3: Why Not Selected ───────────────────────
+                        if score < 75:
+                            with st.expander("❌ Why not selected?"):
+                                reject_key = f"reject_reason_{name}"
+                                if reject_key not in st.session_state:
+                                    with st.spinner("Analyzing weaknesses..."):
+                                        response = st.session_state.llm.invoke(
+                                            f"""Explain why this candidate may not be selected.
+
+Candidate:
+{cand['summary']}
+
+Score:
+{score}
+
+Job Description:
+{st.session_state.saved_jd}
+
+Give:
+- missing skills
+- concerns
+- gaps
+- hiring risks
+
+Keep it professional."""
+                                        )
+                                        st.session_state[reject_key] = response.content
+                                st.write(st.session_state[reject_key])
 
                         # XAI REQUIREMENT ANALYSIS
                         with st.expander("📊 Full XAI Requirement Analysis"):
@@ -626,6 +753,44 @@ Keep it concise and practical."""
                                     unsafe_allow_html=True,
                                 )
                         st.markdown("---")
+
+                # ── FEATURE 4: AI Comparison Engine ──────────────────────────
+                if st.button("🤖 AI Compare Candidates"):
+                    compare_data = ""
+                    for sel in selected:
+                        d = lookup[sel]
+                        compare_data += f"""
+Candidate: {sel}
+
+Summary:
+{d['summary']}
+
+Score:
+{d['overall_score']}
+"""
+                    compare_prompt = f"""Compare these candidates for the following role.
+
+Job Description:
+{st.session_state.saved_jd}
+
+Candidates:
+{compare_data}
+
+Give:
+- strongest candidate
+- biggest strengths
+- biggest weaknesses
+- hiring recommendation
+- final ranking
+
+Keep it concise and recruiter-focused."""
+
+                    with st.spinner("Comparing candidates..."):
+                        response = st.session_state.llm.invoke(compare_prompt)
+
+                    st.markdown("## 🤖 AI Comparison Report")
+                    st.write(response.content)
+
             elif len(selected) == 1:
                 st.info("Select at least one more candidate.")
 
