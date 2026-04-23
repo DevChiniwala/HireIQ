@@ -10,6 +10,10 @@ from utils import (
     generate_email_templates,
 )
 import time
+import json
+from datetime import datetime
+from reportlab.platypus import SimpleDocTemplate, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -77,7 +81,7 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .action-tag{display:inline-block;padding:3px 12px;border-radius:8px;font-size:.83rem;font-weight:600;background:rgba(0,123,255,.12);color:#007BFF;border:1px solid rgba(0,123,255,.3);}
 #MainMenu,footer{visibility:hidden;}
 
-/* FIX uploadupload: zero out all text in the button, inject clean label via ::after */
+/* FIX upload button label duplication */
 [data-testid="stFileUploaderDropzoneButton"]{font-size:0!important;color:transparent!important;}
 [data-testid="stFileUploaderDropzoneButton"] *{font-size:0!important;color:transparent!important;}
 [data-testid="stFileUploaderDropzoneButton"]::after{content:"Browse files";font-size:.88rem;font-weight:600;color:#E2E8F0;}
@@ -99,10 +103,13 @@ if "step" not in st.session_state:
             "saved_files": [],
             "generated_emails": {},
             "shortlist": [],
+            "job_name": "",  # ── DAY 7: multi-job support
         }
     )
 if "shortlist" not in st.session_state:
     st.session_state.shortlist = []
+if "job_name" not in st.session_state:  # guard for existing sessions
+    st.session_state.job_name = ""
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -161,6 +168,28 @@ def llm_cached(key, prompt):
         except Exception as e:
             st.session_state[key] = f"Could not generate: {e}"
     return st.session_state[key]
+
+
+# ── DAY 7: Save Hiring Session ─────────────────────────────────────────────────
+def save_session_data():
+    data = {
+        "timestamp": str(datetime.now()),
+        "job_name": st.session_state.get("job_name", ""),
+        "job_description": st.session_state.saved_jd,
+        "candidates": st.session_state.candidates,
+        "shortlist": st.session_state.shortlist,
+    }
+    return json.dumps(data, indent=2)
+
+
+# ── DAY 7: PDF Report Generator ────────────────────────────────────────────────
+def generate_pdf_report(text):
+    path = "/tmp/hireiq_report.pdf"
+    doc = SimpleDocTemplate(path)
+    styles = getSampleStyleSheet()
+    content = [Paragraph(text.replace("\n", "<br/>"), styles["BodyText"])]
+    doc.build(content)
+    return path
 
 
 # ─── Callbacks ────────────────────────────────────────────────────────────────
@@ -273,6 +302,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── DAY 7: Cache status indicator ─────────────────────────────────────────────
+st.caption("⚡ AI caching enabled for faster recruiter workflows")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 1 — UPLOAD
 # ══════════════════════════════════════════════════════════════════════════════
@@ -281,6 +313,13 @@ if st.session_state.step == "upload":
     st.markdown(
         "<div class='hiq-sh'>Step 1 &nbsp;·&nbsp; Provide Your Data</div>",
         unsafe_allow_html=True,
+    )
+
+    # ── DAY 7: Job Role name field (multi-job support) ─────────────────────
+    st.session_state.job_name = st.text_input(
+        "📌 Job Role",
+        value=st.session_state.job_name,
+        placeholder="e.g. Senior AI Engineer",
     )
 
     col1, col2 = st.columns(2, gap="large")
@@ -295,9 +334,6 @@ if st.session_state.step == "upload":
         )
     with col2:
         st.markdown("**👥 Upload Candidate Resumes (PDF)**")
-        # ✅ FIX: label must NOT contain the word "upload" — Streamlit
-        # appends the label text inside the Browse button, causing "uploadupload".
-        # Using a neutral label + label_visibility="collapsed" solves it.
         new_files = st.file_uploader(
             "Candidate PDFs",
             type=["pdf"],
@@ -365,12 +401,24 @@ elif st.session_state.step == "weighting":
 elif st.session_state.step == "results":
 
     # ── Top bar ───────────────────────────────────────────────────────────────
-    ta, tb = st.columns([6, 1])
+    ta, tb, tc = st.columns([5, 1, 1])
     with ta:
+        role_label = (
+            f" — **{st.session_state.job_name}**" if st.session_state.job_name else ""
+        )
         st.success(
-            f"✅ Analysis complete — **{len(st.session_state.candidates)}** candidate(s) ranked."
+            f"✅ Analysis complete{role_label} — **{len(st.session_state.candidates)}** candidate(s) ranked."
         )
     with tb:
+        # ── DAY 7: Save Hiring Session button ─────────────────────────────
+        session_json = save_session_data()
+        st.download_button(
+            "💾 Save Session",
+            session_json,
+            file_name=f"hireiq_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            use_container_width=True,
+        )
+    with tc:
         st.markdown('<div class="sbtn">', unsafe_allow_html=True)
         st.button("🔄 Start Over", on_click=go_back, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -393,6 +441,19 @@ elif st.session_state.step == "results":
             st.metric("Average Score", avg_score)
         with m3:
             st.metric("Strong Matches", strong_matches)
+
+        # ── DAY 7: Recruitment Snapshot ───────────────────────────────────
+        st.markdown("### 🧠 Recruitment Snapshot")
+        high = len([s for s in scores if s >= 75])
+        mid = len([s for s in scores if 50 <= s < 75])
+        low = len([s for s in scores if s < 50])
+        st.markdown(
+            f"""
+- ✅ Strong candidates: **{high}**
+- ⚠️ Medium-fit candidates: **{mid}**
+- ❌ Weak candidates: **{low}**
+"""
+        )
 
         # FEATURE: Score Distribution Chart
         st.markdown("### 📈 Score Distribution")
@@ -863,11 +924,16 @@ Keep it concise and recruiter-focused."""
                 for c in st.session_state.candidates
                 if "Error:" not in c["name"]
             )
+            role_line = (
+                f"Role: {st.session_state.job_name}\n\n"
+                if st.session_state.job_name
+                else ""
+            )
             with st.spinner("Generating executive report…"):
                 resp = st.session_state.llm.invoke(
                     f"""You are a senior hiring consultant.
 
-Job Description:
+{role_line}Job Description:
 {st.session_state.saved_jd}
 
 Candidate Data:
@@ -890,8 +956,26 @@ Keep it executive-style and concise."""
                 st.session_state["final_hiring_report"],
                 height=420,
             )
-            st.download_button(
-                "📥 Download Report as .txt",
-                st.session_state["final_hiring_report"],
-                file_name="hireiq_report.txt",
-            )
+
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                st.download_button(
+                    "📥 Download Report as .txt",
+                    st.session_state["final_hiring_report"],
+                    file_name="hireiq_report.txt",
+                )
+            with dl2:
+                # ── DAY 7: PDF Export ──────────────────────────────────────
+                try:
+                    pdf_path = generate_pdf_report(
+                        st.session_state["final_hiring_report"]
+                    )
+                    with open(pdf_path, "rb") as f:
+                        st.download_button(
+                            "📄 Download PDF Report",
+                            f,
+                            file_name="hireiq_report.pdf",
+                            mime="application/pdf",
+                        )
+                except Exception as e:
+                    st.warning(f"PDF export unavailable: {e}")
