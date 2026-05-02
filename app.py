@@ -72,6 +72,12 @@ def init_db():
         candidate TEXT, skills TEXT, recruiter TEXT, ts TEXT)""")
     cur.execute("""CREATE TABLE IF NOT EXISTS interview_evaluations (
         candidate TEXT, score_text TEXT, recruiter TEXT, ts TEXT)""")
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS scheduled_interviews (
+        candidate TEXT, interview_date TEXT, interview_time TEXT, recruiter TEXT, ts TEXT)"""
+    )
+    cur.execute("""CREATE TABLE IF NOT EXISTS bookmarks (
+        candidate TEXT, recruiter TEXT, ts TEXT)""")
     conn.commit()
     return conn
 
@@ -122,6 +128,36 @@ def save_interview_eval_to_db(candidate, eval_text, recruiter=""):
     cur.execute(
         "INSERT INTO interview_evaluations (candidate, score_text, recruiter, ts) VALUES (?,?,?,?)",
         (candidate, eval_text, recruiter, str(datetime.now())),
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_scheduled_interview_to_db(
+    candidate, interview_date, interview_time, recruiter=""
+):
+    conn = init_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO scheduled_interviews (candidate, interview_date, interview_time, recruiter, ts) VALUES (?,?,?,?,?)",
+        (
+            candidate,
+            str(interview_date),
+            str(interview_time),
+            recruiter,
+            str(datetime.now()),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_bookmark_to_db(candidate, recruiter=""):
+    conn = init_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO bookmarks (candidate, recruiter, ts) VALUES (?,?,?)",
+        (candidate, recruiter, str(datetime.now())),
     )
     conn.commit()
     conn.close()
@@ -220,6 +256,7 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .bm{background:rgba(255,193,7,.15);color:#ffc107;border:1px solid #ffc107;}
 .bl{background:rgba(220,53,69,.15);color:#dc3545;border:1px solid #dc3545;}
 .shortlist-pill{display:inline-block;background:rgba(0,123,255,.15);color:#007BFF;border:1px solid #007BFF;border-radius:20px;padding:3px 12px;font-size:.82rem;font-weight:600;margin:2px;}
+.bookmark-pill{display:inline-block;background:rgba(255,193,7,.12);color:#ffc107;border:1px solid #ffc107;border-radius:20px;padding:3px 12px;font-size:.82rem;font-weight:600;margin:2px;}
 .skill-tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.82rem;font-weight:500;margin:2px;}
 .skill-match{background:rgba(40,167,69,.15);color:#28a745;border:1px solid #28a745;}
 .skill-missing{background:rgba(220,53,69,.15);color:#dc3545;border:1px solid #dc3545;}
@@ -238,6 +275,11 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .cname{font-size:1.6rem;font-weight:700;color:#fff;margin:0;}
 .action-tag{display:inline-block;padding:3px 12px;border-radius:8px;font-size:.83rem;font-weight:600;background:rgba(0,123,255,.12);color:#007BFF;border:1px solid rgba(0,123,255,.3);}
 .activity-item{padding:.4rem .8rem;border-left:2px solid var(--accent);margin-bottom:.4rem;font-size:.88rem;color:var(--muted);}
+.scheduler-card{background:rgba(0,123,255,.04);border:1px solid rgba(0,123,255,.18);border-radius:10px;padding:1rem 1.2rem;margin:.6rem 0;}
+.trend-card{background:#161B22;border:1px solid #30363D;border-radius:10px;padding:1rem 1.2rem;margin:.4rem 0;text-align:center;}
+.trend-label{font-size:.8rem;color:var(--muted);margin-bottom:.2rem;}
+.trend-value{font-size:1.6rem;font-weight:700;}
+.tv-high{color:#28a745;} .tv-mid{color:#ffc107;} .tv-low{color:#dc3545;}
 #MainMenu,footer{visibility:hidden;}
 [data-testid="stFileUploaderDropzoneButton"]{font-size:0!important;color:transparent!important;}
 [data-testid="stFileUploaderDropzoneButton"] *{font-size:0!important;color:transparent!important;}
@@ -262,6 +304,8 @@ if "step" not in st.session_state:
             "saved_files": [],
             "generated_emails": {},
             "shortlist": [],
+            "bookmarks": [],  # ★ NEW — Candidate bookmarks
+            "scheduled_interviews": {},  # ★ NEW — Scheduled interview registry
             "job_name": "",
             "activity_log": [],
             "authenticated": False,
@@ -271,8 +315,11 @@ if "step" not in st.session_state:
             "session_token": "",
         }
     )
+
 for _k, _d in [
     ("shortlist", []),
+    ("bookmarks", []),
+    ("scheduled_interviews", {}),
     ("job_name", ""),
     ("activity_log", []),
     ("authenticated", False),
@@ -291,7 +338,7 @@ for _k, _d in [
 def clamp(v):
     try:
         return max(0, min(int(v), 100))
-    except:
+    except Exception:
         return 0
 
 
@@ -372,6 +419,7 @@ def tag_css_class(tag: str) -> str:
 
 
 def save_session_data():
+    """Export full session as JSON — includes bookmarks & scheduled interviews."""
     return json.dumps(
         {
             "timestamp": str(datetime.now()),
@@ -380,9 +428,69 @@ def save_session_data():
             "job_description": st.session_state.saved_jd,
             "candidates": st.session_state.candidates,
             "shortlist": st.session_state.shortlist,
+            "bookmarks": st.session_state.bookmarks,
+            "scheduled_interviews": st.session_state.scheduled_interviews,
         },
         indent=2,
     )
+
+
+def build_hiring_summary(scores, strong_matches, avg_score) -> str:
+    """Build a plain-text hiring session summary for download."""
+    bookmarks = st.session_state.get("bookmarks", [])
+    shortlist = st.session_state.get("shortlist", [])
+    scheduled = st.session_state.get("scheduled_interviews", {})
+    high = len([s for s in scores if s >= 80])
+    mid = len([s for s in scores if 60 <= s < 80])
+    low = len([s for s in scores if s < 60])
+
+    lines = [
+        "=" * 52,
+        "        HireIQ — Hiring Session Summary",
+        "=" * 52,
+        f"Generated  : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"Role       : {st.session_state.get('job_name', 'N/A')}",
+        f"Recruiter  : {st.session_state.get('current_user_name', 'N/A')}",
+        "",
+        "── Candidate Pool ──────────────────────────",
+        f"  Total Reviewed  : {len(scores)}",
+        f"  Average Score   : {avg_score} / 100",
+        f"  Strong Matches  : {strong_matches}",
+        "",
+        "── Score Distribution ──────────────────────",
+        f"  High  (≥ 80)  : {high}",
+        f"  Mid   (60–79) : {mid}",
+        f"  Low   (< 60)  : {low}",
+        "",
+        "── Shortlisted Candidates ──────────────────",
+    ]
+    if shortlist:
+        for n in shortlist:
+            lines.append(f"  ⭐  {n}")
+    else:
+        lines.append("  (none)")
+
+    lines += ["", "── Bookmarked Candidates ───────────────────"]
+    if bookmarks:
+        for n in bookmarks:
+            lines.append(f"  🔖  {n}")
+    else:
+        lines.append("  (none)")
+
+    lines += ["", "── Scheduled Interviews ────────────────────"]
+    if scheduled:
+        for cname, info in scheduled.items():
+            lines.append(f"  📅  {cname}  →  {info['date']} at {info['time']}")
+    else:
+        lines.append("  (none)")
+
+    lines += [
+        "",
+        "=" * 52,
+        "   Powered by HireIQ · AI-Powered Hiring Intelligence",
+        "=" * 52,
+    ]
+    return "\n".join(lines)
 
 
 def generate_pdf_report(text: str) -> str:
@@ -544,6 +652,8 @@ if st.session_state.authenticated:
     st.sidebar.markdown("## 🔔 Notifications")
     cand_count = len(st.session_state.get("candidates", []))
     shortlist_count = len(st.session_state.get("shortlist", []))
+    bookmark_count = len(st.session_state.get("bookmarks", []))
+    scheduled_count = len(st.session_state.get("scheduled_interviews", {}))
     notifications = [
         (
             f"{cand_count} candidate(s) in current session"
@@ -555,9 +665,18 @@ if st.session_state.authenticated:
             if shortlist_count
             else "Shortlist is empty"
         ),
+        (
+            f"🔖 {bookmark_count} candidate(s) bookmarked"
+            if bookmark_count
+            else "No bookmarks yet"
+        ),
+        (
+            f"📅 {scheduled_count} interview(s) scheduled"
+            if scheduled_count
+            else "No interviews scheduled"
+        ),
         "🤖 AI caching active — responses instant after first load",
     ]
-    # Add dynamic notification if strong candidate found
     if st.session_state.get("candidates"):
         top_score = clamp(st.session_state.candidates[0].get("overall_score", 0))
         if top_score >= 90:
@@ -574,6 +693,15 @@ if st.session_state.authenticated:
     hist_avg, hist_total, hist_roles, hist_emails = get_historical_stats()
     st.sidebar.metric("Total Evaluated", hist_total)
     st.sidebar.metric("Emails Sent", hist_emails)
+
+    # Bookmarks sidebar panel
+    if st.session_state.get("bookmarks"):
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("## 🔖 Bookmarked Candidates")
+        for bm in st.session_state.bookmarks:
+            st.sidebar.markdown(
+                f"<span class='bookmark-pill'>🔖 {bm}</span>", unsafe_allow_html=True
+            )
 
     # FEATURE: Recruiter Productivity Analytics (sidebar)
     if st.session_state.get("candidates"):
@@ -794,23 +922,41 @@ elif st.session_state.step == "results":
         with m4:
             st.metric("Hire-Ready", hire_ready)
 
-        high = len([s for s in scores if s >= 75])
-        mid = len([s for s in scores if 50 <= s < 75])
-        low = len([s for s in scores if s < 50])
-        st.markdown("### 🧠 Recruitment Snapshot")
-        st.markdown(
-            f"- ✅ Strong candidates: **{high}**\n- ⚠️ Medium-fit: **{mid}**\n- ❌ Weak candidates: **{low}**"
-        )
+        # ════════════════════════════════════════════════════════════════════
+        # FEATURE 4 — HIRING TREND ANALYTICS (enhanced)
+        # ════════════════════════════════════════════════════════════════════
+        high_scores = len([s for s in scores if s >= 80])
+        mid_scores = len([s for s in scores if 60 <= s < 80])
+        low_scores = len([s for s in scores if s < 60])
 
-        st.markdown("## 📈 AI Hiring Trends")
-        strong_ratio = round(
-            (len([s for s in scores if s >= 75]) / len(scores)) * 100, 1
-        )
-        tr1, tr2 = st.columns(2)
-        with tr1:
-            st.metric("Strong Talent Ratio", f"{strong_ratio}%")
-        with tr2:
-            st.metric("Average Talent Score", avg_score)
+        st.markdown("## 📈 Hiring Trend Insights")
+        ht1, ht2, ht3, ht4 = st.columns(4)
+        with ht1:
+            st.markdown(
+                f"<div class='trend-card'><div class='trend-label'>High Match (≥ 80)</div>"
+                f"<div class='trend-value tv-high'>{high_scores}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with ht2:
+            st.markdown(
+                f"<div class='trend-card'><div class='trend-label'>Mid Match (60–79)</div>"
+                f"<div class='trend-value tv-mid'>{mid_scores}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with ht3:
+            st.markdown(
+                f"<div class='trend-card'><div class='trend-label'>Low Match (< 60)</div>"
+                f"<div class='trend-value tv-low'>{low_scores}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with ht4:
+            strong_ratio = round((high_scores / len(scores)) * 100, 1) if scores else 0
+            st.markdown(
+                f"<div class='trend-card'><div class='trend-label'>High-Quality Ratio</div>"
+                f"<div class='trend-value tv-{'high' if strong_ratio>=60 else ('mid' if strong_ratio>=30 else 'low')}'>{strong_ratio}%</div></div>",
+                unsafe_allow_html=True,
+            )
+
         if strong_ratio < 30:
             st.warning(
                 "⚠️ Low high-quality candidate density. Consider expanding sourcing channels."
@@ -820,6 +966,68 @@ elif st.session_state.step == "results":
         else:
             st.success(
                 "✅ Healthy talent pipeline detected. Strong candidate pool available."
+            )
+
+        st.markdown("### 📈 Score Distribution")
+        st.bar_chart(
+            {
+                c["name"]: c["overall_score"]
+                for c in st.session_state.candidates
+                if "Error:" not in c["name"]
+            }
+        )
+
+        # ════════════════════════════════════════════════════════════════════
+        # FEATURE 5 — AI HIRING RECOMMENDATION ENGINE
+        # ════════════════════════════════════════════════════════════════════
+        st.markdown("## 🧠 AI Hiring Recommendation Engine")
+        st.caption(
+            "Generate a strategic hiring recommendation based on all candidate data in this session."
+        )
+
+        if st.button("🧠 Generate Hiring Recommendations", use_container_width=True):
+            candidate_summary_block = "\n".join(
+                f"- {c['name']}: Score {clamp(c['overall_score'])}/100 — {c['summary'][:120]}"
+                for c in st.session_state.candidates
+                if "Error:" not in c["name"]
+            )
+            recommendation_prompt = f"""You are a senior hiring strategist with 20+ years of experience.
+
+Job Role: {st.session_state.get('job_name', 'Not specified')}
+Job Description (excerpt): {st.session_state.saved_jd[:600]}
+
+Current Candidate Pool ({len(scores)} candidates, avg score: {avg_score}/100):
+{candidate_summary_block}
+
+Talent Distribution:
+- High Match (≥80): {high_scores}
+- Mid Match (60-79): {mid_scores}
+- Low Match (<60): {low_scores}
+
+Provide a concise, executive-level hiring strategy covering:
+1. 📊 Overall talent pipeline health assessment
+2. 🏆 Top 2-3 candidates to prioritise and why
+3. ⚠️ Key hiring bottlenecks or risks observed
+4. 🎯 Recommended interview strategy for shortlisted candidates
+5. 🔄 Sourcing recommendations if pipeline is weak
+6. 📅 Suggested hiring timeline
+
+Keep it structured, professional and actionable."""
+
+            with st.spinner("🧠 Generating strategic recommendations…"):
+                rec = st.session_state.llm.invoke(recommendation_prompt)
+                st.session_state["ai_hiring_recommendations"] = rec.content
+                log_activity("AI hiring recommendations generated")
+
+        if st.session_state.get("ai_hiring_recommendations"):
+            st.markdown("---")
+            st.markdown("### 📋 Strategic Recommendations")
+            st.write(st.session_state["ai_hiring_recommendations"])
+            st.download_button(
+                "📥 Download Recommendations",
+                st.session_state["ai_hiring_recommendations"],
+                file_name="hireiq_recommendations.txt",
+                use_container_width=True,
             )
 
         st.markdown("## 🔮 Hiring Forecast Intelligence")
@@ -844,28 +1052,45 @@ elif st.session_state.step == "results":
                 f"✅ Healthy projected pipeline — {predicted_hires} hire(s) predicted."
             )
 
-        # FEATURE: Recruiter Productivity Analytics (main page)
+        # Recruiter Productivity Analytics
         st.markdown("## ⚡ Recruiter Productivity")
         total_reviews = len(st.session_state.candidates)
         shortlisted_cnt = len(st.session_state.shortlist)
-        rp1, rp2, rp3 = st.columns(3)
+        bookmarked_cnt = len(st.session_state.bookmarks)
+        scheduled_cnt = len(st.session_state.scheduled_interviews)
+        rp1, rp2, rp3, rp4 = st.columns(4)
         with rp1:
             st.metric("Profiles Reviewed", total_reviews)
         with rp2:
-            st.metric("Candidates Shortlisted", shortlisted_cnt)
+            st.metric("Shortlisted", shortlisted_cnt)
         with rp3:
-            if total_reviews:
-                efficiency = round((shortlisted_cnt / total_reviews) * 100, 1)
-                st.metric("Shortlisting Efficiency", f"{efficiency}%")
+            st.metric("Bookmarked", bookmarked_cnt)
+        with rp4:
+            st.metric("Interviews Scheduled", scheduled_cnt)
+        if total_reviews:
+            efficiency = round((shortlisted_cnt / total_reviews) * 100, 1)
+            st.metric("Shortlisting Efficiency", f"{efficiency}%")
 
-        st.markdown("### 📈 Score Distribution")
-        st.bar_chart(
-            {
-                c["name"]: c["overall_score"]
-                for c in st.session_state.candidates
-                if "Error:" not in c["name"]
-            }
-        )
+        # ════════════════════════════════════════════════════════════════════
+        # FEATURE 6 — EXPORT HIRING SESSION SUMMARY
+        # ════════════════════════════════════════════════════════════════════
+        st.markdown("## 📁 Export Hiring Session Summary")
+        summary_data = build_hiring_summary(scores, strong_matches, avg_score)
+        exp1, exp2 = st.columns(2)
+        with exp1:
+            st.download_button(
+                "📁 Export Hiring Summary (.txt)",
+                summary_data,
+                file_name=f"hireiq_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                use_container_width=True,
+            )
+        with exp2:
+            st.download_button(
+                "💾 Export Full Session (.json)",
+                save_session_data(),
+                file_name=f"hireiq_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                use_container_width=True,
+            )
 
     # Historical Analytics
     hist_avg, hist_total, hist_roles, hist_emails = get_historical_stats()
@@ -1135,8 +1360,10 @@ Keep it concise and executive-level.""",
                             "<div style='height:.4rem'></div>", unsafe_allow_html=True
                         )
 
-                        # FEATURE: Hiring Pipeline Stages
-                        pip_col, tag_col, sl_col = st.columns([2, 2, 1])
+                        # ════════════════════════════════════════════════════
+                        # FEATURE 2 — CANDIDATE BOOKMARKING
+                        # ════════════════════════════════════════════════════
+                        pip_col, tag_col, sl_col, bm_col = st.columns([2, 2, 1, 1])
                         with pip_col:
                             pipeline_stage = st.selectbox(
                                 "📋 Hiring Stage",
@@ -1180,8 +1407,25 @@ Keep it concise and executive-level.""",
                                     st.rerun()
                             else:
                                 st.markdown("⭐ **Shortlisted**")
+                        with bm_col:
+                            # Bookmark toggle
+                            if name not in st.session_state.bookmarks:
+                                if st.button("🔖 Bookmark", key=f"bm_{rank}"):
+                                    st.session_state.bookmarks.append(name)
+                                    save_bookmark_to_db(
+                                        name, st.session_state.current_user
+                                    )
+                                    log_activity(f"Bookmarked: {name}")
+                                    st.toast(f"🔖 {name} bookmarked")
+                                    st.rerun()
+                            else:
+                                st.markdown("🔖 **Bookmarked**")
+                                if st.button("✖ Remove", key=f"bm_rm_{rank}"):
+                                    st.session_state.bookmarks.remove(name)
+                                    log_activity(f"Bookmark removed: {name}")
+                                    st.rerun()
 
-                        # FEATURE: Candidate Tagging System (multi-select skills tags)
+                        # Candidate Tagging System
                         candidate_tags = st.multiselect(
                             "🏷 Candidate Tags",
                             [
@@ -1203,22 +1447,30 @@ Keep it concise and executive-level.""",
                                 + ", ".join(f"`{t}`" for t in candidate_tags)
                             )
 
-                        # Notes + Reviewer
+                        # ════════════════════════════════════════════════════
+                        # FEATURE 1 — RECRUITER NOTES SYSTEM (enhanced)
+                        # ════════════════════════════════════════════════════
+                        st.markdown("### 📝 Recruiter Notes")
                         note_col2, rev_col = st.columns([3, 2])
                         with note_col2:
                             note_val = st.text_area(
                                 "Recruiter Notes",
                                 key=f"notes_{name}",
-                                placeholder="Observations, interview notes…",
-                                height=68,
+                                placeholder="Add interview observations, feedback, red flags or highlights…",
+                                height=80,
                                 label_visibility="collapsed",
                             )
                             if st.button("💾 Save Notes", key=f"save_note_{rank}"):
-                                save_note_to_db(
-                                    name, note_val or "", st.session_state.current_user
-                                )
-                                st.toast(f"✅ Notes saved for {name}")
-                                log_activity(f"Notes saved for: {name}")
+                                if note_val and note_val.strip():
+                                    save_note_to_db(
+                                        name, note_val, st.session_state.current_user
+                                    )
+                                    st.success(
+                                        f"✅ Recruiter note saved for **{name}**"
+                                    )
+                                    log_activity(f"Notes saved for: {name}")
+                                else:
+                                    st.warning("Write a note before saving.")
                         with rev_col:
                             reviewer = st.selectbox(
                                 "👥 Assign Reviewer",
@@ -1232,6 +1484,55 @@ Keep it concise and executive-level.""",
                                 label_visibility="collapsed",
                             )
                             st.caption(f"👥 Assigned: **{reviewer}**")
+
+                        # ════════════════════════════════════════════════════
+                        # FEATURE 3 — INTERVIEW SCHEDULER
+                        # ════════════════════════════════════════════════════
+                        st.markdown("### 📅 Interview Scheduler")
+                        st.markdown(
+                            "<div class='scheduler-card'>", unsafe_allow_html=True
+                        )
+                        sch1, sch2, sch3 = st.columns([2, 2, 1])
+                        with sch1:
+                            interview_date = st.date_input(
+                                "Interview Date",
+                                key=f"date_{name}",
+                                label_visibility="collapsed",
+                            )
+                        with sch2:
+                            interview_time = st.time_input(
+                                "Interview Time",
+                                key=f"time_{name}",
+                                label_visibility="collapsed",
+                            )
+                        with sch3:
+                            if st.button("📅 Schedule", key=f"schedule_{name}"):
+                                st.session_state.scheduled_interviews[name] = {
+                                    "date": str(interview_date),
+                                    "time": str(interview_time),
+                                    "recruiter": st.session_state.current_user_name,
+                                }
+                                save_scheduled_interview_to_db(
+                                    name,
+                                    interview_date,
+                                    interview_time,
+                                    st.session_state.current_user,
+                                )
+                                log_activity(
+                                    f"Interview scheduled for {name} on {interview_date} at {interview_time}"
+                                )
+                                st.success(
+                                    f"✅ Interview scheduled for **{name}**  \n"
+                                    f"📅 {interview_date.strftime('%A, %B %d, %Y')} at {interview_time.strftime('%I:%M %p')}"
+                                )
+                        # Show existing schedule if set
+                        if name in st.session_state.scheduled_interviews:
+                            info = st.session_state.scheduled_interviews[name]
+                            st.info(
+                                f"🗓 Scheduled: **{info['date']}** at **{info['time']}** "
+                                f"by {info.get('recruiter', 'N/A')}"
+                            )
+                        st.markdown("</div>", unsafe_allow_html=True)
 
                         with st.expander("🧠 Why this score?"):
                             with st.spinner("Analysing…"):
@@ -1257,27 +1558,19 @@ Give: missing skills, concerns, gaps, hiring risks. Keep it professional and con
                                     )
                                 st.write(result)
 
-                        # FEATURE: AI Risk Analysis
                         with st.expander("⚠️ AI Risk Analysis"):
                             if st.button("🔍 Analyze Hiring Risk", key=f"risk_{rank}"):
                                 with st.spinner("Analysing candidate risk profile…"):
                                     risk_prompt = f"""You are an AI hiring risk analyst.
-
-Candidate Summary:
-{cand.get('summary', '')}
-
+Candidate Summary: {cand.get('summary', '')}
 Score: {score}/100
-
 Identify and structure:
 - Hiring risks
 - Skill gaps vs job requirements
 - Retention concerns
 - Communication concerns
 - Leadership or culture concerns
-
-Job Description context:
-{st.session_state.saved_jd[:500]}
-
+Job Description context: {st.session_state.saved_jd[:500]}
 Keep each section concise and professional."""
                                     risk_resp = st.session_state.llm.invoke(risk_prompt)
                                     st.write(risk_resp.content)
@@ -1389,7 +1682,6 @@ Be specific and professional."""
                             for msg in st.session_state.chat_histories.get(name, []):
                                 role = msg["role"]
                                 content = msg["content"]
-
                                 st.markdown(
                                     f"<div class='bubble {role}'>{content}</div>",
                                     unsafe_allow_html=True,
