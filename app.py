@@ -34,25 +34,50 @@ st.set_page_config(
 )
 
 # ════════════════════════════════════════════════════════════════════════════
-# MULTI-RECRUITER ACCOUNT SYSTEM
+# ★ DAY 16 FEATURE 1 — ROLE-BASED ACCESS CONTROL
+#   Admin     → full platform access
+#   Manager   → analytics + results + JD optimizer, no admin panel
+#   Recruiter → upload + results + collab only
 # ════════════════════════════════════════════════════════════════════════════
 RECRUITER_ACCOUNTS = {
-    "admin": {"password": "hireiq", "role": "Admin", "name": "Admin Recruiter"},
-    "hr1": {"password": "hr2026", "role": "Recruiter", "name": "HR Recruiter 1"},
-    "hiring": {"password": "hire2026", "role": "Manager", "name": "Hiring Manager"},
+    "admin": {
+        "password": "hireiq",
+        "role": "Admin",
+        "name": "Admin Recruiter",
+        "permissions": [
+            "upload",
+            "results",
+            "analytics",
+            "admin",
+            "jd_optimizer",
+            "collab",
+        ],
+    },
+    "hr1": {
+        "password": "hr2026",
+        "role": "Recruiter",
+        "name": "HR Recruiter 1",
+        "permissions": ["upload", "results", "collab"],
+    },
+    "hiring": {
+        "password": "hire2026",
+        "role": "Manager",
+        "name": "Hiring Manager",
+        "permissions": ["upload", "results", "analytics", "jd_optimizer", "collab"],
+    },
 }
 
 
+def has_perm(perm: str) -> bool:
+    return perm in st.session_state.get("current_user_permissions", [])
+
+
 # ════════════════════════════════════════════════════════════════════════════
-# SESSION SECURITY SIMULATION (JWT-style token)
+# SESSION SECURITY
 # ════════════════════════════════════════════════════════════════════════════
 def generate_session_token(username: str) -> str:
     payload = f"{username}:{datetime.now().date()}:hireiq_secret"
     return hashlib.sha256(payload.encode()).hexdigest()[:16].upper()
-
-
-def verify_session_token(username: str, token: str) -> bool:
-    return token == generate_session_token(username)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -78,6 +103,10 @@ def init_db():
     )
     cur.execute("""CREATE TABLE IF NOT EXISTS bookmarks (
         candidate TEXT, recruiter TEXT, ts TEXT)""")
+    # ★ DAY 16 — team collaboration comments
+    cur.execute("""CREATE TABLE IF NOT EXISTS collab_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        candidate TEXT, comment TEXT, recruiter TEXT, role TEXT, ts TEXT)""")
     conn.commit()
     return conn
 
@@ -89,11 +118,11 @@ def save_candidates_to_db(candidates, job_name="", recruiter=""):
     for c in candidates:
         if "Error:" not in c["name"]:
             cur.execute(
-                "INSERT INTO candidates (job_name, name, score, summary, recruiter, ts) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO candidates (job_name,name,score,summary,recruiter,ts) VALUES (?,?,?,?,?,?)",
                 (job_name, c["name"], c["overall_score"], c["summary"], recruiter, ts),
             )
             cur.execute(
-                "INSERT INTO candidate_memory (candidate, skills, recruiter, ts) VALUES (?,?,?,?)",
+                "INSERT INTO candidate_memory (candidate,skills,recruiter,ts) VALUES (?,?,?,?)",
                 (c["name"], c["summary"][:500], recruiter, ts),
             )
     conn.commit()
@@ -104,7 +133,7 @@ def save_note_to_db(candidate_name, note, recruiter=""):
     conn = init_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO notes (candidate, note, recruiter, ts) VALUES (?,?,?,?)",
+        "INSERT INTO notes (candidate,note,recruiter,ts) VALUES (?,?,?,?)",
         (candidate_name, note, recruiter, str(datetime.now())),
     )
     conn.commit()
@@ -115,7 +144,7 @@ def log_email_to_db(candidate, email_type, recruiter=""):
     conn = init_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO email_log (candidate, email_type, recruiter, ts) VALUES (?,?,?,?)",
+        "INSERT INTO email_log (candidate,email_type,recruiter,ts) VALUES (?,?,?,?)",
         (candidate, email_type, recruiter, str(datetime.now())),
     )
     conn.commit()
@@ -126,7 +155,7 @@ def save_interview_eval_to_db(candidate, eval_text, recruiter=""):
     conn = init_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO interview_evaluations (candidate, score_text, recruiter, ts) VALUES (?,?,?,?)",
+        "INSERT INTO interview_evaluations (candidate,score_text,recruiter,ts) VALUES (?,?,?,?)",
         (candidate, eval_text, recruiter, str(datetime.now())),
     )
     conn.commit()
@@ -139,7 +168,7 @@ def save_scheduled_interview_to_db(
     conn = init_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO scheduled_interviews (candidate, interview_date, interview_time, recruiter, ts) VALUES (?,?,?,?,?)",
+        "INSERT INTO scheduled_interviews (candidate,interview_date,interview_time,recruiter,ts) VALUES (?,?,?,?,?)",
         (
             candidate,
             str(interview_date),
@@ -156,11 +185,38 @@ def save_bookmark_to_db(candidate, recruiter=""):
     conn = init_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO bookmarks (candidate, recruiter, ts) VALUES (?,?,?)",
+        "INSERT INTO bookmarks (candidate,recruiter,ts) VALUES (?,?,?)",
         (candidate, recruiter, str(datetime.now())),
     )
     conn.commit()
     conn.close()
+
+
+# ★ DAY 16 — collab helpers
+def save_collab_comment(candidate, comment, recruiter, role):
+    conn = init_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO collab_comments (candidate,comment,recruiter,role,ts) VALUES (?,?,?,?,?)",
+        (candidate, comment, recruiter, role, str(datetime.now())),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_collab_comments(candidate):
+    try:
+        conn = init_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT comment,recruiter,role,ts FROM collab_comments WHERE candidate=? ORDER BY ts DESC LIMIT 20",
+            (candidate,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception:
+        return []
 
 
 def get_historical_stats():
@@ -172,7 +228,7 @@ def get_historical_stats():
         cur.execute("SELECT COUNT(*) FROM candidates")
         total = cur.fetchone()[0]
         cur.execute(
-            "SELECT COUNT(DISTINCT job_name) FROM candidates WHERE job_name != ''"
+            "SELECT COUNT(DISTINCT job_name) FROM candidates WHERE job_name!=''"
         )
         roles = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM email_log")
@@ -188,7 +244,7 @@ def search_candidate_memory(query):
         conn = init_db()
         cur = conn.cursor()
         cur.execute(
-            "SELECT candidate, skills, recruiter, ts FROM candidate_memory WHERE skills LIKE ? LIMIT 10",
+            "SELECT candidate,skills,recruiter,ts FROM candidate_memory WHERE skills LIKE ? LIMIT 10",
             (f"%{query}%",),
         )
         rows = cur.fetchall()
@@ -196,6 +252,29 @@ def search_candidate_memory(query):
         return rows
     except Exception:
         return []
+
+
+# ★ DAY 16 — Admin DB overview
+def get_admin_db_stats():
+    try:
+        conn = init_db()
+        cur = conn.cursor()
+        stats = {}
+        for t in [
+            "candidates",
+            "notes",
+            "email_log",
+            "scheduled_interviews",
+            "bookmarks",
+            "collab_comments",
+            "interview_evaluations",
+        ]:
+            cur.execute(f"SELECT COUNT(*) FROM {t}")
+            stats[t] = cur.fetchone()[0]
+        conn.close()
+        return stats
+    except Exception:
+        return {}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -219,10 +298,7 @@ st.markdown(
     """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap');
-:root {
-    --bg:#0D1117; --card:#161B22; --border:#30363D;
-    --text:#E2E8F0; --muted:#94A3B8; --accent:#007BFF; --glow:rgba(0,123,255,0.25);
-}
+:root{--bg:#0D1117;--card:#161B22;--border:#30363D;--text:#E2E8F0;--muted:#94A3B8;--accent:#007BFF;--glow:rgba(0,123,255,0.25);}
 html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .stApp{background-color:var(--bg);background-image:radial-gradient(var(--border) 0.5px,transparent 0.5px);background-size:15px 15px;}
 .block-container{padding-top:2rem!important;}
@@ -233,11 +309,12 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .hiq-sh{font-size:1.4rem;font-weight:600;border-bottom:1px solid var(--border);padding-bottom:.75rem;margin-bottom:1.25rem;}
 .login-card{max-width:420px;margin:4rem auto;background:#161B22;border:1px solid #30363D;border-radius:16px;padding:2.5rem;}
 .role-badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600;background:rgba(0,123,255,.15);color:#007BFF;border:1px solid #007BFF;margin-left:8px;}
+.role-admin{background:rgba(220,53,69,.15)!important;color:#dc3545!important;border-color:#dc3545!important;}
+.role-manager{background:rgba(156,39,176,.15)!important;color:#9c27b0!important;border-color:#9c27b0!important;}
 .token-badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:.72rem;font-weight:600;background:rgba(40,167,69,.1);color:#28a745;border:1px solid #28a745;font-family:monospace;}
 .rec-card{background:#161B22;border:1px solid #30363D;border-radius:12px;padding:1.2rem;margin-bottom:.75rem;}
 .rec-rank{font-size:2rem;font-weight:700;color:#007BFF;}
 .mem-card{background:#0d1117;border:1px solid #30363D;border-radius:8px;padding:.8rem 1rem;margin-bottom:.5rem;}
-.forecast-card{background:rgba(0,123,255,.05);border:1px solid rgba(0,123,255,.2);border-radius:10px;padding:1rem;margin:.5rem 0;}
 .notif-item{background:rgba(0,123,255,.07);border-left:3px solid var(--accent);border-radius:0 6px 6px 0;padding:.4rem .8rem;margin-bottom:.4rem;font-size:.83rem;}
 .stage-badge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:.8rem;font-weight:600;margin:2px;background:rgba(0,123,255,.15);color:#007BFF;border:1px solid #007BFF;}
 .stButton>button{border-radius:8px;padding:12px 24px;font-weight:600;transition:all .2s ease!important;}
@@ -279,7 +356,20 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .trend-card{background:#161B22;border:1px solid #30363D;border-radius:10px;padding:1rem 1.2rem;margin:.4rem 0;text-align:center;}
 .trend-label{font-size:.8rem;color:var(--muted);margin-bottom:.2rem;}
 .trend-value{font-size:1.6rem;font-weight:700;}
-.tv-high{color:#28a745;} .tv-mid{color:#ffc107;} .tv-low{color:#dc3545;}
+.tv-high{color:#28a745;}.tv-mid{color:#ffc107;}.tv-low{color:#dc3545;}
+/* ★ DAY 16 */
+.kanban-col{background:#161B22;border:1px solid #30363D;border-radius:12px;padding:1rem;min-height:180px;}
+.kanban-header{font-size:.82rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.7rem;padding-bottom:.35rem;border-bottom:2px solid var(--border);}
+.kanban-card{background:#0d1117;border:1px solid #30363D;border-radius:8px;padding:.55rem .85rem;margin-bottom:.45rem;font-size:.83rem;}
+.kanban-card:hover{border-color:var(--accent);}
+.jd-tip{background:rgba(0,123,255,.06);border:1px solid rgba(0,123,255,.2);border-radius:8px;padding:.6rem .9rem;margin:.4rem 0;font-size:.86rem;}
+.collab-comment{background:#0d1117;border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:.5rem .9rem;margin-bottom:.5rem;font-size:.85rem;}
+.collab-meta{font-size:.75rem;color:var(--muted);margin-bottom:.2rem;}
+.admin-stat{background:#161B22;border:1px solid #30363D;border-radius:10px;padding:1rem;text-align:center;}
+.admin-stat-val{font-size:2rem;font-weight:700;color:#007BFF;}
+.admin-stat-lbl{font-size:.78rem;color:var(--muted);}
+.cal-card{background:#161B22;border:1px solid #30363D;border-radius:10px;padding:.8rem 1rem;margin-bottom:.5rem;display:flex;align-items:center;gap:1rem;}
+.cal-date{background:var(--accent);color:#fff;border-radius:8px;padding:.4rem .7rem;font-weight:700;font-size:.88rem;white-space:nowrap;}
 #MainMenu,footer{visibility:hidden;}
 [data-testid="stFileUploaderDropzoneButton"]{font-size:0!important;color:transparent!important;}
 [data-testid="stFileUploaderDropzoneButton"] *{font-size:0!important;color:transparent!important;}
@@ -292,44 +382,43 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 # ════════════════════════════════════════════════════════════════════════════
 # SESSION STATE
 # ════════════════════════════════════════════════════════════════════════════
+_DEFAULTS = {
+    "step": "upload",
+    "candidates": [],
+    "key_requirements": [],
+    "chat_histories": {},
+    "rag_retrievers": {},
+    "saved_jd": "",
+    "saved_files": [],
+    "generated_emails": {},
+    "shortlist": [],
+    "bookmarks": [],
+    "scheduled_interviews": {},
+    "kanban_stages": {},
+    "job_name": "",
+    "activity_log": [],
+    "authenticated": False,
+    "current_user": "",
+    "current_user_role": "",
+    "current_user_name": "",
+    "current_user_permissions": [],
+    "session_token": "",
+    "jd_analysis": None,
+}
 if "step" not in st.session_state:
-    st.session_state.update(
-        {
-            "step": "upload",
-            "candidates": [],
-            "key_requirements": [],
-            "chat_histories": {},
-            "rag_retrievers": {},
-            "saved_jd": "",
-            "saved_files": [],
-            "generated_emails": {},
-            "shortlist": [],
-            "bookmarks": [],  # ★ NEW — Candidate bookmarks
-            "scheduled_interviews": {},  # ★ NEW — Scheduled interview registry
-            "job_name": "",
-            "activity_log": [],
-            "authenticated": False,
-            "current_user": "",
-            "current_user_role": "",
-            "current_user_name": "",
-            "session_token": "",
-        }
-    )
+    st.session_state.update(_DEFAULTS)
+for k, v in _DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = type(v)() if isinstance(v, (list, dict)) else v
 
-for _k, _d in [
-    ("shortlist", []),
-    ("bookmarks", []),
-    ("scheduled_interviews", {}),
-    ("job_name", ""),
-    ("activity_log", []),
-    ("authenticated", False),
-    ("current_user", ""),
-    ("current_user_role", ""),
-    ("current_user_name", ""),
-    ("session_token", ""),
-]:
-    if _k not in st.session_state:
-        st.session_state[_k] = _d
+KANBAN_STAGES = [
+    "Applied",
+    "Screening",
+    "Technical Interview",
+    "Final Interview",
+    "Offer",
+    "Rejected",
+]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -338,7 +427,7 @@ for _k, _d in [
 def clamp(v):
     try:
         return max(0, min(int(v), 100))
-    except Exception:
+    except:
         return 0
 
 
@@ -418,8 +507,22 @@ def tag_css_class(tag: str) -> str:
     }.get(tag, "tag-review")
 
 
+def role_badge_cls(role: str) -> str:
+    return {"Admin": "role-admin", "Manager": "role-manager"}.get(role, "")
+
+
+def kanban_color(stage: str) -> str:
+    return {
+        "Applied": "#94A3B8",
+        "Screening": "#007BFF",
+        "Technical Interview": "#ffc107",
+        "Final Interview": "#9c27b0",
+        "Offer": "#28a745",
+        "Rejected": "#dc3545",
+    }.get(stage, "#94A3B8")
+
+
 def save_session_data():
-    """Export full session as JSON — includes bookmarks & scheduled interviews."""
     return json.dumps(
         {
             "timestamp": str(datetime.now()),
@@ -436,21 +539,19 @@ def save_session_data():
 
 
 def build_hiring_summary(scores, strong_matches, avg_score) -> str:
-    """Build a plain-text hiring session summary for download."""
-    bookmarks = st.session_state.get("bookmarks", [])
-    shortlist = st.session_state.get("shortlist", [])
-    scheduled = st.session_state.get("scheduled_interviews", {})
-    high = len([s for s in scores if s >= 80])
-    mid = len([s for s in scores if 60 <= s < 80])
-    low = len([s for s in scores if s < 60])
-
+    bm = st.session_state.get("bookmarks", [])
+    sl = st.session_state.get("shortlist", [])
+    sc = st.session_state.get("scheduled_interviews", {})
+    h = len([s for s in scores if s >= 80])
+    m = len([s for s in scores if 60 <= s < 80])
+    l = len([s for s in scores if s < 60])
     lines = [
         "=" * 52,
         "        HireIQ — Hiring Session Summary",
         "=" * 52,
         f"Generated  : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"Role       : {st.session_state.get('job_name', 'N/A')}",
-        f"Recruiter  : {st.session_state.get('current_user_name', 'N/A')}",
+        f"Role       : {st.session_state.get('job_name','N/A')}",
+        f"Recruiter  : {st.session_state.get('current_user_name','N/A')}",
         "",
         "── Candidate Pool ──────────────────────────",
         f"  Total Reviewed  : {len(scores)}",
@@ -458,32 +559,21 @@ def build_hiring_summary(scores, strong_matches, avg_score) -> str:
         f"  Strong Matches  : {strong_matches}",
         "",
         "── Score Distribution ──────────────────────",
-        f"  High  (≥ 80)  : {high}",
-        f"  Mid   (60–79) : {mid}",
-        f"  Low   (< 60)  : {low}",
+        f"  High  (≥ 80)  : {h}",
+        f"  Mid   (60-79) : {m}",
+        f"  Low   (< 60)  : {l}",
         "",
-        "── Shortlisted Candidates ──────────────────",
+        "── Shortlisted ──────────────────────────────",
     ]
-    if shortlist:
-        for n in shortlist:
-            lines.append(f"  ⭐  {n}")
-    else:
-        lines.append("  (none)")
-
-    lines += ["", "── Bookmarked Candidates ───────────────────"]
-    if bookmarks:
-        for n in bookmarks:
-            lines.append(f"  🔖  {n}")
-    else:
-        lines.append("  (none)")
-
-    lines += ["", "── Scheduled Interviews ────────────────────"]
-    if scheduled:
-        for cname, info in scheduled.items():
-            lines.append(f"  📅  {cname}  →  {info['date']} at {info['time']}")
-    else:
-        lines.append("  (none)")
-
+    lines += [f"  ⭐  {n}" for n in sl] if sl else ["  (none)"]
+    lines += ["", "── Bookmarked ───────────────────────────────"]
+    lines += [f"  🔖  {n}" for n in bm] if bm else ["  (none)"]
+    lines += ["", "── Scheduled Interviews ─────────────────────"]
+    lines += (
+        [f"  📅  {c}  →  {i['date']} at {i['time']}" for c, i in sc.items()]
+        if sc
+        else ["  (none)"]
+    )
     lines += [
         "",
         "=" * 52,
@@ -504,19 +594,16 @@ def generate_pdf_report(text: str) -> str:
 def build_recommendation_engine(candidates):
     valid = [c for c in candidates if "Error:" not in c["name"]]
     top3 = sorted(valid, key=lambda x: x["overall_score"], reverse=True)[:3]
-    recs = []
-    for i, c in enumerate(top3):
-        score = clamp(c["overall_score"])
-        recs.append(
-            {
-                "rank": i + 1,
-                "name": c["name"],
-                "score": score,
-                "confidence": max(60, min(98, score - i * 3)),
-                "summary": c["summary"],
-            }
-        )
-    return recs
+    return [
+        {
+            "rank": i + 1,
+            "name": c["name"],
+            "score": clamp(c["overall_score"]),
+            "confidence": max(60, min(98, clamp(c["overall_score"]) - i * 3)),
+            "summary": c["summary"],
+        }
+        for i, c in enumerate(top3)
+    ]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -606,6 +693,14 @@ def run_analysis():
             st.session_state.current_user,
         )
 
+        # init kanban
+        for c in st.session_state.candidates:
+            if (
+                "Error:" not in c["name"]
+                and c["name"] not in st.session_state.kanban_stages
+            ):
+                st.session_state.kanban_stages[c["name"]] = "Applied"
+
         st.session_state.rag_retrievers = {}
         st.session_state.chat_histories = {}
         for c in st.session_state.candidates:
@@ -628,7 +723,7 @@ def run_analysis():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — WORKSPACE + NOTIFICATIONS + PRODUCTIVITY
+# SIDEBAR
 # ════════════════════════════════════════════════════════════════════════════
 if st.session_state.authenticated:
     st.sidebar.markdown("## 🏢 Recruiter Workspace")
@@ -639,8 +734,25 @@ if st.session_state.authenticated:
     )
     st.sidebar.success(f"📂 Workspace: **{workspace}**")
     st.sidebar.markdown("---")
+    role = st.session_state.current_user_role
+    rb = role_badge_cls(role)
     st.sidebar.markdown(f"👤 **{st.session_state.current_user_name}**")
-    st.sidebar.markdown(f"🔑 Role: `{st.session_state.current_user_role}`")
+    st.sidebar.markdown(
+        f"🔑 Role: <span class='role-badge {rb}'>{role}</span>", unsafe_allow_html=True
+    )
+    perm_icons = {
+        "upload": "📤",
+        "results": "📊",
+        "analytics": "📈",
+        "admin": "🔐",
+        "jd_optimizer": "✍️",
+        "collab": "💬",
+    }
+    perms_html = " ".join(
+        f"<span style='font-size:.75rem'>{perm_icons.get(p,p)}</span>"
+        for p in st.session_state.get("current_user_permissions", [])
+    )
+    st.sidebar.markdown(f"**Access:** {perms_html}", unsafe_allow_html=True)
     if st.session_state.get("session_token"):
         st.sidebar.markdown(
             f"🔒 Token: <span class='token-badge'>{st.session_state.session_token}</span>",
@@ -648,54 +760,48 @@ if st.session_state.authenticated:
         )
     st.sidebar.markdown("---")
 
-    # FEATURE: Recruiter Notification Center
     st.sidebar.markdown("## 🔔 Notifications")
-    cand_count = len(st.session_state.get("candidates", []))
-    shortlist_count = len(st.session_state.get("shortlist", []))
-    bookmark_count = len(st.session_state.get("bookmarks", []))
-    scheduled_count = len(st.session_state.get("scheduled_interviews", {}))
-    notifications = [
+    notifs = [
         (
-            f"{cand_count} candidate(s) in current session"
-            if cand_count
+            f"{len(st.session_state.candidates)} candidate(s) in current session"
+            if st.session_state.candidates
             else "No candidates loaded yet"
         ),
         (
-            f"{shortlist_count} candidate(s) shortlisted"
-            if shortlist_count
+            f"{len(st.session_state.shortlist)} candidate(s) shortlisted"
+            if st.session_state.shortlist
             else "Shortlist is empty"
         ),
         (
-            f"🔖 {bookmark_count} candidate(s) bookmarked"
-            if bookmark_count
+            f"🔖 {len(st.session_state.bookmarks)} bookmarked"
+            if st.session_state.bookmarks
             else "No bookmarks yet"
         ),
         (
-            f"📅 {scheduled_count} interview(s) scheduled"
-            if scheduled_count
+            f"📅 {len(st.session_state.scheduled_interviews)} interview(s) scheduled"
+            if st.session_state.scheduled_interviews
             else "No interviews scheduled"
         ),
         "🤖 AI caching active — responses instant after first load",
     ]
-    if st.session_state.get("candidates"):
-        top_score = clamp(st.session_state.candidates[0].get("overall_score", 0))
-        if top_score >= 90:
-            notifications.insert(0, f"🔥 Top candidate scored {top_score}/100!")
-        elif top_score >= 75:
-            notifications.insert(0, f"✅ Strong top candidate — {top_score}/100")
-    for note in notifications:
+    if st.session_state.candidates:
+        ts = clamp(st.session_state.candidates[0].get("overall_score", 0))
+        if ts >= 90:
+            notifs.insert(0, f"🔥 Top candidate scored {ts}/100!")
+        elif ts >= 75:
+            notifs.insert(0, f"✅ Strong top candidate — {ts}/100")
+    for n in notifs:
         st.sidebar.markdown(
-            f"<div class='notif-item'>{note}</div>", unsafe_allow_html=True
+            f"<div class='notif-item'>{n}</div>", unsafe_allow_html=True
         )
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("**📊 Quick Stats**")
-    hist_avg, hist_total, hist_roles, hist_emails = get_historical_stats()
-    st.sidebar.metric("Total Evaluated", hist_total)
-    st.sidebar.metric("Emails Sent", hist_emails)
+    ha, ht, hr, he = get_historical_stats()
+    st.sidebar.metric("Total Evaluated", ht)
+    st.sidebar.metric("Emails Sent", he)
 
-    # Bookmarks sidebar panel
-    if st.session_state.get("bookmarks"):
+    if st.session_state.bookmarks:
         st.sidebar.markdown("---")
         st.sidebar.markdown("## 🔖 Bookmarked Candidates")
         for bm in st.session_state.bookmarks:
@@ -703,29 +809,24 @@ if st.session_state.authenticated:
                 f"<span class='bookmark-pill'>🔖 {bm}</span>", unsafe_allow_html=True
             )
 
-    # FEATURE: Recruiter Productivity Analytics (sidebar)
-    if st.session_state.get("candidates"):
+    if st.session_state.candidates:
         st.sidebar.markdown("---")
         st.sidebar.markdown("## ⚡ My Productivity")
-        total_reviews = len(st.session_state.candidates)
-        shortlisted_cnt = len(st.session_state.shortlist)
-        st.sidebar.metric("Profiles Reviewed", total_reviews)
-        st.sidebar.metric("Candidates Shortlisted", shortlisted_cnt)
-        if total_reviews:
-            efficiency = round((shortlisted_cnt / total_reviews) * 100, 1)
-            st.sidebar.metric("Shortlisting Efficiency", f"{efficiency}%")
+        tr = len(st.session_state.candidates)
+        sc2 = len(st.session_state.shortlist)
+        st.sidebar.metric("Profiles Reviewed", tr)
+        st.sidebar.metric("Candidates Shortlisted", sc2)
+        if tr:
+            st.sidebar.metric("Shortlisting Efficiency", f"{round((sc2/tr)*100,1)}%")
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # AUTHENTICATION
 # ════════════════════════════════════════════════════════════════════════════
 if not st.session_state.authenticated:
     st.markdown(
-        """
-    <div class="hiq-header" style="margin-top:3rem">
-      <h1>HireIQ</h1>
-      <p>AI-Powered Hiring Intelligence Platform</p>
-    </div>
-    """,
+        """<div class="hiq-header" style="margin-top:3rem">
+      <h1>HireIQ</h1><p>AI-Powered Hiring Intelligence Platform</p></div>""",
         unsafe_allow_html=True,
     )
     _, lc, _ = st.columns([1, 1.2, 1])
@@ -744,6 +845,7 @@ if not st.session_state.authenticated:
                         "current_user": user,
                         "current_user_role": account["role"],
                         "current_user_name": account["name"],
+                        "current_user_permissions": account["permissions"],
                         "session_token": token,
                     }
                 )
@@ -760,27 +862,26 @@ if not st.session_state.authenticated:
         st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
+
 # ════════════════════════════════════════════════════════════════════════════
 # HEADER
 # ════════════════════════════════════════════════════════════════════════════
 st.markdown(
-    """
-<div class="hiq-header">
+    """<div class="hiq-header">
   <h1>HireIQ</h1>
   <p>AI-Powered Hiring Intelligence &nbsp;·&nbsp; Screen Smarter. Hire Faster. Explain Every Decision.</p>
-</div>
-""",
+</div>""",
     unsafe_allow_html=True,
 )
 
 hdr1, hdr2 = st.columns([8, 1])
 with hdr1:
-    role_badge = f"<span class='role-badge'>{st.session_state.current_user_role}</span>"
-    token_badge = (
-        f"<span class='token-badge'>🔒 {st.session_state.session_token}</span>"
-    )
+    role = st.session_state.current_user_role
+    rb = role_badge_cls(role)
     st.markdown(
-        f"⚡ AI caching · 🗄 SQLite · 👤 **{st.session_state.current_user_name}** {role_badge} &nbsp; {token_badge}",
+        f"⚡ AI caching · 🗄 SQLite · 👤 **{st.session_state.current_user_name}** "
+        f"<span class='role-badge {rb}'>{role}</span> &nbsp; "
+        f"<span class='token-badge'>🔒 {st.session_state.session_token}</span>",
         unsafe_allow_html=True,
     )
 with hdr2:
@@ -788,6 +889,7 @@ with hdr2:
         st.session_state.authenticated = False
         st.session_state.session_token = ""
         st.rerun()
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 1 — UPLOAD
@@ -802,7 +904,6 @@ if st.session_state.step == "upload":
         value=st.session_state.job_name,
         placeholder="e.g. Senior AI Engineer",
     )
-
     col1, col2 = st.columns(2, gap="large")
     with col1:
         st.markdown("**📝 Job Description**")
@@ -813,6 +914,83 @@ if st.session_state.step == "upload":
             height=320,
             label_visibility="collapsed",
         )
+
+        # ════════════════════════════════════════════════════════════════════
+        # ★ DAY 16 — FEATURE 2: AI JD OPTIMIZER (Manager / Admin only)
+        # ════════════════════════════════════════════════════════════════════
+        if has_perm("jd_optimizer") and st.session_state.saved_jd.strip():
+            with st.expander("✍️ AI Job Description Optimizer", expanded=False):
+                st.caption("Analyze and improve your JD before screening candidates.")
+                if st.button("🔍 Analyze JD Quality", use_container_width=True):
+                    with st.spinner("Analyzing job description…"):
+                        jd_prompt = f"""You are an expert HR consultant and job description specialist.
+Analyze this Job Description and return a JSON object with these exact keys:
+{{
+  "overall_score": <integer 0-100>,
+  "clarity_score": <integer 0-100>,
+  "inclusivity_score": <integer 0-100>,
+  "specificity_score": <integer 0-100>,
+  "issues": [<list of 3-5 specific problems found>],
+  "improvements": [<list of 3-5 actionable improvements>],
+  "rewritten_summary": "<an improved 3-4 sentence version of the JD opening>",
+  "missing_sections": [<list of important missing sections, e.g. salary range, benefits>]
+}}
+Job Description:
+{st.session_state.saved_jd[:2000]}
+Return ONLY the JSON, no explanation."""
+                        try:
+                            resp = st.session_state.llm.invoke(jd_prompt)
+                            raw = (
+                                resp.content.strip()
+                                .replace("```json", "")
+                                .replace("```", "")
+                            )
+                            st.session_state.jd_analysis = json.loads(raw)
+                            log_activity("JD quality analysis run")
+                        except Exception as e:
+                            st.error(f"JD analysis failed: {e}")
+
+                if st.session_state.get("jd_analysis"):
+                    jd = st.session_state.jd_analysis
+                    overall = jd.get("overall_score", 0)
+                    color = (
+                        "#28a745"
+                        if overall >= 70
+                        else ("#ffc107" if overall >= 50 else "#dc3545")
+                    )
+                    st.markdown(
+                        f"#### JD Quality Score: <span style='color:{color};font-size:1.4rem;font-weight:700'>{overall}/100</span>",
+                        unsafe_allow_html=True,
+                    )
+                    sc1, sc2, sc3 = st.columns(3)
+                    sc1.metric("Clarity", f"{jd.get('clarity_score',0)}/100")
+                    sc2.metric("Inclusivity", f"{jd.get('inclusivity_score',0)}/100")
+                    sc3.metric("Specificity", f"{jd.get('specificity_score',0)}/100")
+                    if jd.get("issues"):
+                        st.markdown("**⚠️ Issues Found:**")
+                        for issue in jd["issues"]:
+                            st.markdown(
+                                f"<div class='jd-tip'>🔸 {issue}</div>",
+                                unsafe_allow_html=True,
+                            )
+                    if jd.get("improvements"):
+                        st.markdown("**💡 Suggested Improvements:**")
+                        for imp in jd["improvements"]:
+                            st.markdown(
+                                f"<div class='jd-tip'>✅ {imp}</div>",
+                                unsafe_allow_html=True,
+                            )
+                    if jd.get("missing_sections"):
+                        st.markdown(
+                            "**📋 Missing Sections:** "
+                            + ", ".join(f"`{s}`" for s in jd["missing_sections"])
+                        )
+                    if jd.get("rewritten_summary"):
+                        st.markdown("**✍️ AI-Improved Opening:**")
+                        st.info(jd["rewritten_summary"])
+        elif not has_perm("jd_optimizer"):
+            st.caption("🔒 JD Optimizer — Manager / Admin only")
+
     with col2:
         st.markdown("**👥 Upload Candidate Resumes (PDF)**")
         new_files = st.file_uploader(
@@ -832,6 +1010,7 @@ if st.session_state.step == "upload":
         "🔍 Analyse Requirements →", on_click=go_to_weighting, use_container_width=True
     )
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 2 — WEIGHTING
@@ -873,6 +1052,7 @@ elif st.session_state.step == "weighting":
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
+
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 3 — RESULTS
 # ════════════════════════════════════════════════════════════════════════════
@@ -880,11 +1060,9 @@ elif st.session_state.step == "results":
 
     ta, tb, tc = st.columns([5, 1, 1])
     with ta:
-        role_label = (
-            f" — **{st.session_state.job_name}**" if st.session_state.job_name else ""
-        )
+        rl = f" — **{st.session_state.job_name}**" if st.session_state.job_name else ""
         st.success(
-            f"✅ Analysis complete{role_label} — **{len(st.session_state.candidates)}** candidate(s) ranked."
+            f"✅ Analysis complete{rl} — **{len(st.session_state.candidates)}** candidate(s) ranked."
         )
     with tb:
         st.download_button(
@@ -898,213 +1076,206 @@ elif st.session_state.step == "results":
         st.button("🔄 Start Over", on_click=go_back, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ════════════════════════════════════════════════════════════════════════
-    # EXECUTIVE ANALYTICS
-    # ════════════════════════════════════════════════════════════════════════
     scores = [
         c["overall_score"]
         for c in st.session_state.candidates
         if "Error:" not in c["name"]
     ]
+
     if scores:
         avg_score = round(sum(scores) / len(scores), 1)
         strong_matches = len([s for s in scores if s >= 75])
         hire_ready = len([s for s in scores if s >= 80])
-
-        st.markdown("## 📊 Executive Hiring Insights")
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("Candidates", len(scores))
-        with m2:
-            st.metric("Average Score", avg_score)
-        with m3:
-            st.metric("Strong Matches", strong_matches)
-        with m4:
-            st.metric("Hire-Ready", hire_ready)
-
-        # ════════════════════════════════════════════════════════════════════
-        # FEATURE 4 — HIRING TREND ANALYTICS (enhanced)
-        # ════════════════════════════════════════════════════════════════════
-        high_scores = len([s for s in scores if s >= 80])
+        high_scores = hire_ready
         mid_scores = len([s for s in scores if 60 <= s < 80])
         low_scores = len([s for s in scores if s < 60])
+        strong_ratio = round((high_scores / len(scores)) * 100, 1) if scores else 0
 
-        st.markdown("## 📈 Hiring Trend Insights")
-        ht1, ht2, ht3, ht4 = st.columns(4)
-        with ht1:
-            st.markdown(
-                f"<div class='trend-card'><div class='trend-label'>High Match (≥ 80)</div>"
-                f"<div class='trend-value tv-high'>{high_scores}</div></div>",
-                unsafe_allow_html=True,
+        # Analytics — gated by permission
+        if has_perm("analytics"):
+            st.markdown("## 📊 Executive Hiring Insights")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Candidates", len(scores))
+            m2.metric("Average Score", avg_score)
+            m3.metric("Strong Matches", strong_matches)
+            m4.metric("Hire-Ready", hire_ready)
+
+            st.markdown("## 📈 Hiring Trend Insights")
+            ht1, ht2, ht3, ht4 = st.columns(4)
+            tv = (
+                "tv-high"
+                if strong_ratio >= 60
+                else ("tv-mid" if strong_ratio >= 30 else "tv-low")
             )
-        with ht2:
-            st.markdown(
-                f"<div class='trend-card'><div class='trend-label'>Mid Match (60–79)</div>"
-                f"<div class='trend-value tv-mid'>{mid_scores}</div></div>",
-                unsafe_allow_html=True,
+            with ht1:
+                st.markdown(
+                    f"<div class='trend-card'><div class='trend-label'>High Match (≥ 80)</div><div class='trend-value tv-high'>{high_scores}</div></div>",
+                    unsafe_allow_html=True,
+                )
+            with ht2:
+                st.markdown(
+                    f"<div class='trend-card'><div class='trend-label'>Mid Match (60–79)</div><div class='trend-value tv-mid'>{mid_scores}</div></div>",
+                    unsafe_allow_html=True,
+                )
+            with ht3:
+                st.markdown(
+                    f"<div class='trend-card'><div class='trend-label'>Low Match (&lt; 60)</div><div class='trend-value tv-low'>{low_scores}</div></div>",
+                    unsafe_allow_html=True,
+                )
+            with ht4:
+                st.markdown(
+                    f"<div class='trend-card'><div class='trend-label'>High-Quality Ratio</div><div class='trend-value {tv}'>{strong_ratio}%</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+            if strong_ratio < 30:
+                st.warning(
+                    "⚠️ Low high-quality candidate density. Consider expanding sourcing channels."
+                )
+            elif strong_ratio < 60:
+                st.info(
+                    "ℹ️ Moderate talent pipeline. A few strong candidates are present."
+                )
+            else:
+                st.success(
+                    "✅ Healthy talent pipeline detected. Strong candidate pool available."
+                )
+
+            st.markdown("### 📈 Score Distribution")
+            st.bar_chart(
+                {
+                    c["name"]: c["overall_score"]
+                    for c in st.session_state.candidates
+                    if "Error:" not in c["name"]
+                }
             )
-        with ht3:
-            st.markdown(
-                f"<div class='trend-card'><div class='trend-label'>Low Match (< 60)</div>"
-                f"<div class='trend-value tv-low'>{low_scores}</div></div>",
-                unsafe_allow_html=True,
+
+            st.markdown("## 🧠 AI Hiring Recommendation Engine")
+            st.caption(
+                "Generate a strategic hiring recommendation based on all candidate data in this session."
             )
-        with ht4:
-            strong_ratio = round((high_scores / len(scores)) * 100, 1) if scores else 0
-            st.markdown(
-                f"<div class='trend-card'><div class='trend-label'>High-Quality Ratio</div>"
-                f"<div class='trend-value tv-{'high' if strong_ratio>=60 else ('mid' if strong_ratio>=30 else 'low')}'>{strong_ratio}%</div></div>",
-                unsafe_allow_html=True,
-            )
-
-        if strong_ratio < 30:
-            st.warning(
-                "⚠️ Low high-quality candidate density. Consider expanding sourcing channels."
-            )
-        elif strong_ratio < 60:
-            st.info("ℹ️ Moderate talent pipeline. A few strong candidates are present.")
-        else:
-            st.success(
-                "✅ Healthy talent pipeline detected. Strong candidate pool available."
-            )
-
-        st.markdown("### 📈 Score Distribution")
-        st.bar_chart(
-            {
-                c["name"]: c["overall_score"]
-                for c in st.session_state.candidates
-                if "Error:" not in c["name"]
-            }
-        )
-
-        # ════════════════════════════════════════════════════════════════════
-        # FEATURE 5 — AI HIRING RECOMMENDATION ENGINE
-        # ════════════════════════════════════════════════════════════════════
-        st.markdown("## 🧠 AI Hiring Recommendation Engine")
-        st.caption(
-            "Generate a strategic hiring recommendation based on all candidate data in this session."
-        )
-
-        if st.button("🧠 Generate Hiring Recommendations", use_container_width=True):
-            candidate_summary_block = "\n".join(
-                f"- {c['name']}: Score {clamp(c['overall_score'])}/100 — {c['summary'][:120]}"
-                for c in st.session_state.candidates
-                if "Error:" not in c["name"]
-            )
-            recommendation_prompt = f"""You are a senior hiring strategist with 20+ years of experience.
-
-Job Role: {st.session_state.get('job_name', 'Not specified')}
-Job Description (excerpt): {st.session_state.saved_jd[:600]}
-
-Current Candidate Pool ({len(scores)} candidates, avg score: {avg_score}/100):
-{candidate_summary_block}
-
-Talent Distribution:
-- High Match (≥80): {high_scores}
-- Mid Match (60-79): {mid_scores}
-- Low Match (<60): {low_scores}
-
-Provide a concise, executive-level hiring strategy covering:
-1. 📊 Overall talent pipeline health assessment
-2. 🏆 Top 2-3 candidates to prioritise and why
-3. ⚠️ Key hiring bottlenecks or risks observed
-4. 🎯 Recommended interview strategy for shortlisted candidates
-5. 🔄 Sourcing recommendations if pipeline is weak
-6. 📅 Suggested hiring timeline
-
+            if st.button(
+                "🧠 Generate Hiring Recommendations", use_container_width=True
+            ):
+                cand_block = "\n".join(
+                    f"- {c['name']}: Score {clamp(c['overall_score'])}/100 — {c['summary'][:120]}"
+                    for c in st.session_state.candidates
+                    if "Error:" not in c["name"]
+                )
+                rec_prompt = f"""You are a senior hiring strategist with 20+ years of experience.
+Job Role: {st.session_state.get('job_name','Not specified')}
+Job Description: {st.session_state.saved_jd[:600]}
+Candidate Pool ({len(scores)} candidates, avg: {avg_score}/100):
+{cand_block}
+Distribution — High(≥80):{high_scores} Mid(60-79):{mid_scores} Low(<60):{low_scores}
+Provide concise executive-level strategy:
+1. 📊 Pipeline health assessment  2. 🏆 Top 2-3 candidates to prioritise
+3. ⚠️ Key bottlenecks / risks   4. 🎯 Recommended interview strategy
+5. 🔄 Sourcing recommendations   6. 📅 Suggested hiring timeline
 Keep it structured, professional and actionable."""
+                with st.spinner("🧠 Generating strategic recommendations…"):
+                    rec = st.session_state.llm.invoke(rec_prompt)
+                    st.session_state["ai_hiring_recommendations"] = rec.content
+                    log_activity("AI hiring recommendations generated")
+            if st.session_state.get("ai_hiring_recommendations"):
+                st.markdown("---")
+                st.markdown("### 📋 Strategic Recommendations")
+                st.write(st.session_state["ai_hiring_recommendations"])
+                st.download_button(
+                    "📥 Download Recommendations",
+                    st.session_state["ai_hiring_recommendations"],
+                    file_name="hireiq_recommendations.txt",
+                    use_container_width=True,
+                )
 
-            with st.spinner("🧠 Generating strategic recommendations…"):
-                rec = st.session_state.llm.invoke(recommendation_prompt)
-                st.session_state["ai_hiring_recommendations"] = rec.content
-                log_activity("AI hiring recommendations generated")
-
-        if st.session_state.get("ai_hiring_recommendations"):
-            st.markdown("---")
-            st.markdown("### 📋 Strategic Recommendations")
-            st.write(st.session_state["ai_hiring_recommendations"])
-            st.download_button(
-                "📥 Download Recommendations",
-                st.session_state["ai_hiring_recommendations"],
-                file_name="hireiq_recommendations.txt",
-                use_container_width=True,
+            st.markdown("## 🔮 Hiring Forecast Intelligence")
+            pred = max(1, int(len(scores) * 0.25))
+            tth = max(7, 30 - int(strong_ratio / 5))
+            ph = (
+                "🟢 Strong"
+                if strong_ratio >= 60
+                else ("🟡 Moderate" if strong_ratio >= 30 else "🔴 Weak")
             )
+            fp1, fp2, fp3 = st.columns(3)
+            fp1.metric("Predicted Successful Hires", pred)
+            fp2.metric("Est. Time to Hire (days)", tth)
+            fp3.metric("Pipeline Health", ph)
+            if pred < 2:
+                st.warning(
+                    "⚠️ Pipeline may require broader sourcing or relaxed criteria."
+                )
+            else:
+                st.success(f"✅ Healthy projected pipeline — {pred} hire(s) predicted.")
 
-        st.markdown("## 🔮 Hiring Forecast Intelligence")
-        predicted_hires = max(1, int(len(scores) * 0.25))
-        time_to_hire_days = max(7, 30 - int(strong_ratio / 5))
-        pipeline_health = (
-            "🟢 Strong"
-            if strong_ratio >= 60
-            else ("🟡 Moderate" if strong_ratio >= 30 else "🔴 Weak")
-        )
-        fp1, fp2, fp3 = st.columns(3)
-        with fp1:
-            st.metric("Predicted Successful Hires", predicted_hires)
-        with fp2:
-            st.metric("Est. Time to Hire (days)", time_to_hire_days)
-        with fp3:
-            st.metric("Pipeline Health", pipeline_health)
-        if predicted_hires < 2:
-            st.warning("⚠️ Pipeline may require broader sourcing or relaxed criteria.")
+            st.markdown("## ⚡ Recruiter Productivity")
+            rp1, rp2, rp3, rp4 = st.columns(4)
+            rp1.metric("Profiles Reviewed", len(st.session_state.candidates))
+            rp2.metric("Shortlisted", len(st.session_state.shortlist))
+            rp3.metric("Bookmarked", len(st.session_state.bookmarks))
+            rp4.metric(
+                "Interviews Scheduled", len(st.session_state.scheduled_interviews)
+            )
+            if st.session_state.candidates:
+                eff = round(
+                    (len(st.session_state.shortlist) / len(st.session_state.candidates))
+                    * 100,
+                    1,
+                )
+                st.metric("Shortlisting Efficiency", f"{eff}%")
+
+            st.markdown("## 📁 Export Hiring Session Summary")
+            ex1, ex2 = st.columns(2)
+            with ex1:
+                st.download_button(
+                    "📁 Export Hiring Summary (.txt)",
+                    build_hiring_summary(scores, strong_matches, avg_score),
+                    file_name=f"hireiq_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    use_container_width=True,
+                )
+            with ex2:
+                st.download_button(
+                    "💾 Export Full Session (.json)",
+                    save_session_data(),
+                    file_name=f"hireiq_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    use_container_width=True,
+                )
         else:
-            st.success(
-                f"✅ Healthy projected pipeline — {predicted_hires} hire(s) predicted."
+            st.markdown("## 📊 Session Overview")
+            m1, m2 = st.columns(2)
+            m1.metric("Candidates Reviewed", len(scores))
+            m2.metric("Your Shortlist", len(st.session_state.shortlist))
+            st.caption("🔒 Full analytics dashboard — Manager / Admin only.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ★ DAY 16 — FEATURE 3: INTERVIEW CALENDAR VIEW
+    # ════════════════════════════════════════════════════════════════════════
+    if st.session_state.scheduled_interviews:
+        st.markdown("## 📅 Interview Calendar")
+        sorted_iv = sorted(
+            st.session_state.scheduled_interviews.items(), key=lambda x: x[1]["date"]
+        )
+        for cname, info in sorted_iv:
+            cand = next(
+                (c for c in st.session_state.candidates if c["name"] == cname), {}
+            )
+            s = clamp(cand.get("overall_score", 0))
+            st.markdown(
+                f"<div class='cal-card'><div class='cal-date'>📅 {info['date']}</div>"
+                f"<div style='flex:1'><b>{cname}</b> &nbsp; {badge(s)}"
+                f"<div style='color:var(--muted);font-size:.8rem'>⏰ {info['time']} &nbsp;·&nbsp; "
+                f"👤 {info.get('recruiter','N/A')}</div></div></div>",
+                unsafe_allow_html=True,
             )
 
-        # Recruiter Productivity Analytics
-        st.markdown("## ⚡ Recruiter Productivity")
-        total_reviews = len(st.session_state.candidates)
-        shortlisted_cnt = len(st.session_state.shortlist)
-        bookmarked_cnt = len(st.session_state.bookmarks)
-        scheduled_cnt = len(st.session_state.scheduled_interviews)
-        rp1, rp2, rp3, rp4 = st.columns(4)
-        with rp1:
-            st.metric("Profiles Reviewed", total_reviews)
-        with rp2:
-            st.metric("Shortlisted", shortlisted_cnt)
-        with rp3:
-            st.metric("Bookmarked", bookmarked_cnt)
-        with rp4:
-            st.metric("Interviews Scheduled", scheduled_cnt)
-        if total_reviews:
-            efficiency = round((shortlisted_cnt / total_reviews) * 100, 1)
-            st.metric("Shortlisting Efficiency", f"{efficiency}%")
-
-        # ════════════════════════════════════════════════════════════════════
-        # FEATURE 6 — EXPORT HIRING SESSION SUMMARY
-        # ════════════════════════════════════════════════════════════════════
-        st.markdown("## 📁 Export Hiring Session Summary")
-        summary_data = build_hiring_summary(scores, strong_matches, avg_score)
-        exp1, exp2 = st.columns(2)
-        with exp1:
-            st.download_button(
-                "📁 Export Hiring Summary (.txt)",
-                summary_data,
-                file_name=f"hireiq_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                use_container_width=True,
-            )
-        with exp2:
-            st.download_button(
-                "💾 Export Full Session (.json)",
-                save_session_data(),
-                file_name=f"hireiq_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                use_container_width=True,
-            )
-
-    # Historical Analytics
-    hist_avg, hist_total, hist_roles, hist_emails = get_historical_stats()
-    if hist_total > 0:
+    # Historical analytics
+    ha, ht, hr2, he = get_historical_stats()
+    if ht > 0 and has_perm("analytics"):
         st.markdown("## 📚 Historical Hiring Analytics")
         h1, h2, h3, h4 = st.columns(4)
-        with h1:
-            st.metric("All-Time Avg Score", hist_avg)
-        with h2:
-            st.metric("Total Candidates Evaluated", hist_total)
-        with h3:
-            st.metric("Roles Processed", hist_roles)
-        with h4:
-            st.metric("Emails Sent (DB)", hist_emails)
+        h1.metric("All-Time Avg Score", ha)
+        h2.metric("Total Candidates Evaluated", ht)
+        h3.metric("Roles Processed", hr2)
+        h4.metric("Emails Sent (DB)", he)
 
     # Talent Intelligence Search
     st.markdown("## 🔍 Talent Intelligence Search")
@@ -1121,51 +1292,46 @@ Keep it structured, professional and actionable."""
             )
             for row in rows:
                 st.markdown(
-                    f"""<div class='mem-card'><b>👤 {row[0]}</b>
-<span style='color:var(--muted);font-size:.8rem;margin-left:8px'>— reviewed by {row[2] or 'unknown'}</span><br>
-<small style='color:var(--muted)'>{row[1][:250]}…</small></div>""",
+                    f"<div class='mem-card'><b>👤 {row[0]}</b>"
+                    f"<span style='color:var(--muted);font-size:.8rem;margin-left:8px'>— reviewed by {row[2] or 'unknown'}</span><br>"
+                    f"<small style='color:var(--muted)'>{row[1][:250]}…</small></div>",
                     unsafe_allow_html=True,
                 )
         else:
             st.warning(f"No historical candidates found matching **{memory_query}**.")
 
-    # AI Candidate Recommendations
     if st.session_state.candidates:
         recs = build_recommendation_engine(st.session_state.candidates)
         if recs:
             st.markdown("## 🧠 AI Candidate Recommendations")
-            rec_cols = st.columns(len(recs))
-            for col, rec in zip(rec_cols, recs):
+            rc = st.columns(len(recs))
+            for col, rec in zip(rc, recs):
+                bc = "bh" if rec["score"] >= 75 else "bm"
                 with col:
-                    bc = "bh" if rec["score"] >= 75 else "bm"
                     st.markdown(
-                        f"""<div class='rec-card'><div class='rec-rank'>#{rec['rank']}</div>
-<b>{rec['name']}</b><br><span class='badge {bc}'>{rec['score']} / 100</span><br>
-<small style='color:var(--muted)'>Confidence: {rec['confidence']}%</small><br>
-<small style='color:var(--muted)'>{rec['summary'][:100]}…</small></div>""",
+                        f"<div class='rec-card'><div class='rec-rank'>#{rec['rank']}</div>"
+                        f"<b>{rec['name']}</b><br><span class='badge {bc}'>{rec['score']} / 100</span><br>"
+                        f"<small style='color:var(--muted)'>Confidence: {rec['confidence']}%</small><br>"
+                        f"<small style='color:var(--muted)'>{rec['summary'][:100]}…</small></div>",
                         unsafe_allow_html=True,
                     )
 
-    # Top candidate banner
     if st.session_state.candidates:
         top = st.session_state.candidates[0]
-        top_score = clamp(top["overall_score"])
-        st.info(
-            f"🏆 **Top Candidate:** {top['name']} — {top_score} / 100  ·  {decision(top_score)}"
-        )
+        ts = clamp(top["overall_score"])
+        st.info(f"🏆 **Top Candidate:** {top['name']} — {ts} / 100  ·  {decision(ts)}")
         with st.expander("🏆 Why was this candidate ranked #1?"):
             with st.spinner("Analysing…"):
                 result = llm_cached(
                     "top_candidate_reason",
                     f"""You are a senior hiring director.
 Job Description: {st.session_state.saved_jd}
-Top Candidate: {top['name']} | Summary: {top['summary']} | Score: {top_score}
+Top Candidate: {top['name']} | Summary: {top['summary']} | Score: {ts}
 Explain: Why ranked highest, biggest strengths, hiring advantages, potential risks, final recommendation.
 Keep it concise and executive-level.""",
                 )
             st.write(result)
 
-    # Shortlist bar
     if st.session_state.shortlist:
         pills = "".join(
             f"<span class='shortlist-pill'>⭐ {n}</span>"
@@ -1204,7 +1370,15 @@ Keep it concise and executive-level.""",
                     f"✅ {len(st.session_state.shortlist)} invitation(s) dispatched"
                 )
 
-    tab1, tab2, tab3 = st.tabs(["🏆 Leaderboard", "🤝 Compare", "✉️ Emails & Report"])
+    # ════════════════════════════════════════════════════════════════════════
+    # TABS — Leaderboard | Kanban | Compare | Emails | Admin
+    # ════════════════════════════════════════════════════════════════════════
+    tab_list = ["🏆 Leaderboard", "🗂 Kanban Board", "🤝 Compare", "✉️ Emails & Report"]
+    if has_perm("admin"):
+        tab_list.append("🔐 Admin Panel")
+    tabs = st.tabs(tab_list)
+    tab1, tab_kanban, tab2, tab3 = tabs[0], tabs[1], tabs[2], tabs[3]
+    tab_admin = tabs[4] if has_perm("admin") else None
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 1 — LEADERBOARD
@@ -1302,22 +1476,15 @@ Keep it concise and executive-level.""",
                             f"<div style='text-align:right;padding-top:8px'>{badge(score)}</div>",
                             unsafe_allow_html=True,
                         )
-
                     st.progress(score / 100.0)
-
                     ml, dl, al, cl = st.columns(4)
-                    with ml:
-                        st.markdown(f"**Match:** {match_label(score)}")
-                    with dl:
-                        st.markdown(f"**Decision:** {decision(score)}")
-                    with al:
-                        st.markdown(
-                            f"**Action:** <span class='action-tag'>{next_action(score)}</span>",
-                            unsafe_allow_html=True,
-                        )
-                    with cl:
-                        st.markdown(f"**Rating:** {cached_label(score)}")
-
+                    ml.markdown(f"**Match:** {match_label(score)}")
+                    dl.markdown(f"**Decision:** {decision(score)}")
+                    al.markdown(
+                        f"**Action:** <span class='action-tag'>{next_action(score)}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    cl.markdown(f"**Rating:** {cached_label(score)}")
                     st.markdown(
                         f"<p style='color:var(--muted);margin-top:.5rem'>{cand['summary']}</p>",
                         unsafe_allow_html=True,
@@ -1360,24 +1527,15 @@ Keep it concise and executive-level.""",
                             "<div style='height:.4rem'></div>", unsafe_allow_html=True
                         )
 
-                        # ════════════════════════════════════════════════════
-                        # FEATURE 2 — CANDIDATE BOOKMARKING
-                        # ════════════════════════════════════════════════════
                         pip_col, tag_col, sl_col, bm_col = st.columns([2, 2, 1, 1])
                         with pip_col:
                             pipeline_stage = st.selectbox(
                                 "📋 Hiring Stage",
-                                [
-                                    "Applied",
-                                    "Screening",
-                                    "Technical Interview",
-                                    "Final Interview",
-                                    "Offer",
-                                    "Rejected",
-                                ],
+                                KANBAN_STAGES,
                                 key=f"stage_{name}",
                                 label_visibility="collapsed",
                             )
+                            st.session_state.kanban_stages[name] = pipeline_stage
                             st.markdown(
                                 f"<span class='stage-badge'>📋 {pipeline_stage}</span>",
                                 unsafe_allow_html=True,
@@ -1408,7 +1566,6 @@ Keep it concise and executive-level.""",
                             else:
                                 st.markdown("⭐ **Shortlisted**")
                         with bm_col:
-                            # Bookmark toggle
                             if name not in st.session_state.bookmarks:
                                 if st.button("🔖 Bookmark", key=f"bm_{rank}"):
                                     st.session_state.bookmarks.append(name)
@@ -1425,7 +1582,6 @@ Keep it concise and executive-level.""",
                                     log_activity(f"Bookmark removed: {name}")
                                     st.rerun()
 
-                        # Candidate Tagging System
                         candidate_tags = st.multiselect(
                             "🏷 Candidate Tags",
                             [
@@ -1447,9 +1603,6 @@ Keep it concise and executive-level.""",
                                 + ", ".join(f"`{t}`" for t in candidate_tags)
                             )
 
-                        # ════════════════════════════════════════════════════
-                        # FEATURE 1 — RECRUITER NOTES SYSTEM (enhanced)
-                        # ════════════════════════════════════════════════════
                         st.markdown("### 📝 Recruiter Notes")
                         note_col2, rev_col = st.columns([3, 2])
                         with note_col2:
@@ -1485,9 +1638,6 @@ Keep it concise and executive-level.""",
                             )
                             st.caption(f"👥 Assigned: **{reviewer}**")
 
-                        # ════════════════════════════════════════════════════
-                        # FEATURE 3 — INTERVIEW SCHEDULER
-                        # ════════════════════════════════════════════════════
                         st.markdown("### 📅 Interview Scheduler")
                         st.markdown(
                             "<div class='scheduler-card'>", unsafe_allow_html=True
@@ -1522,17 +1672,55 @@ Keep it concise and executive-level.""",
                                     f"Interview scheduled for {name} on {interview_date} at {interview_time}"
                                 )
                                 st.success(
-                                    f"✅ Interview scheduled for **{name}**  \n"
-                                    f"📅 {interview_date.strftime('%A, %B %d, %Y')} at {interview_time.strftime('%I:%M %p')}"
+                                    f"✅ Interview scheduled for **{name}**  \n📅 {interview_date.strftime('%A, %B %d, %Y')} at {interview_time.strftime('%I:%M %p')}"
                                 )
-                        # Show existing schedule if set
                         if name in st.session_state.scheduled_interviews:
                             info = st.session_state.scheduled_interviews[name]
                             st.info(
-                                f"🗓 Scheduled: **{info['date']}** at **{info['time']}** "
-                                f"by {info.get('recruiter', 'N/A')}"
+                                f"🗓 Scheduled: **{info['date']}** at **{info['time']}** by {info.get('recruiter','N/A')}"
                             )
                         st.markdown("</div>", unsafe_allow_html=True)
+
+                        # ════════════════════════════════════════════════════
+                        # ★ DAY 16 — FEATURE 4: MULTI-RECRUITER COLLABORATION
+                        # ════════════════════════════════════════════════════
+                        if has_perm("collab"):
+                            with st.expander("💬 Team Collaboration Comments"):
+                                collab_input = st.text_area(
+                                    "Your comment",
+                                    key=f"collab_input_{rank}",
+                                    placeholder="e.g. Great culture fit. Strong system design. Recommend fast-tracking.",
+                                    height=68,
+                                    label_visibility="collapsed",
+                                )
+                                if st.button(
+                                    "💬 Post Comment", key=f"collab_post_{rank}"
+                                ):
+                                    if collab_input.strip():
+                                        save_collab_comment(
+                                            name,
+                                            collab_input.strip(),
+                                            st.session_state.current_user_name,
+                                            st.session_state.current_user_role,
+                                        )
+                                        log_activity(f"Team comment posted for: {name}")
+                                        st.toast("✅ Comment posted to team")
+                                        st.rerun()
+                                    else:
+                                        st.warning("Write a comment first.")
+                                comments = get_collab_comments(name)
+                                if comments:
+                                    st.markdown("**📋 Team Comments:**")
+                                    for comment, rec_name, rec_role, ts_str in comments:
+                                        rb2 = role_badge_cls(rec_role)
+                                        st.markdown(
+                                            f"<div class='collab-comment'><div class='collab-meta'>"
+                                            f"<span class='role-badge {rb2}'>{rec_role}</span> &nbsp; "
+                                            f"<b>{rec_name}</b> &nbsp;·&nbsp; {ts_str[:16]}</div>{comment}</div>",
+                                            unsafe_allow_html=True,
+                                        )
+                                else:
+                                    st.caption("No team comments yet. Be the first.")
 
                         with st.expander("🧠 Why this score?"):
                             with st.spinner("Analysing…"):
@@ -1540,7 +1728,7 @@ Keep it concise and executive-level.""",
                                     f"explain_{name}",
                                     f"""You are a senior hiring manager.
 Job Description: {st.session_state.saved_jd}
-Candidate Summary: {cand.get('summary', '')}
+Candidate Summary: {cand.get('summary','')}
 Score: {score}/100
 Give: Why this score, top strengths (bullets), weaknesses/risks, missing skills, final recommendation. Keep it concise.""",
                                 )
@@ -1561,19 +1749,13 @@ Give: missing skills, concerns, gaps, hiring risks. Keep it professional and con
                         with st.expander("⚠️ AI Risk Analysis"):
                             if st.button("🔍 Analyze Hiring Risk", key=f"risk_{rank}"):
                                 with st.spinner("Analysing candidate risk profile…"):
-                                    risk_prompt = f"""You are an AI hiring risk analyst.
-Candidate Summary: {cand.get('summary', '')}
-Score: {score}/100
-Identify and structure:
-- Hiring risks
-- Skill gaps vs job requirements
-- Retention concerns
-- Communication concerns
-- Leadership or culture concerns
-Job Description context: {st.session_state.saved_jd[:500]}
-Keep each section concise and professional."""
-                                    risk_resp = st.session_state.llm.invoke(risk_prompt)
-                                    st.write(risk_resp.content)
+                                    rr = st.session_state.llm.invoke(
+                                        f"""You are an AI hiring risk analyst.
+Candidate Summary: {cand.get('summary','')} | Score: {score}/100
+Identify: Hiring risks, Skill gaps, Retention concerns, Communication concerns, Culture concerns.
+Job Description context: {st.session_state.saved_jd[:500]} Keep concise and professional."""
+                                    )
+                                    st.write(rr.content)
                                     log_activity(f"Risk analysis run for: {name}")
 
                         with st.expander("🎤 AI Interview Questions"):
@@ -1582,7 +1764,7 @@ Keep each section concise and professional."""
                                     f"questions_{name}",
                                     f"""You are a senior technical recruiter.
 Job Description: {st.session_state.saved_jd}
-Candidate Summary: {cand.get('summary', '')}
+Candidate Summary: {cand.get('summary','')}
 Generate: 5 technical questions, 3 behavioral questions, 2 deep follow-up questions.
 Make them highly relevant to this specific candidate and role.""",
                                 )
@@ -1599,7 +1781,7 @@ Make them highly relevant to this specific candidate and role.""",
                                     resp = st.session_state.llm.invoke(
                                         f"""You are a senior technical interviewer.
 Job Description: {st.session_state.saved_jd}
-Candidate Summary: {cand.get('summary', '')}
+Candidate Summary: {cand.get('summary','')}
 Generate: 5 challenging technical questions, 2 behavioral questions, 1 system design question.
 Include expected strong answers for each. Be realistic and challenging."""
                                     )
@@ -1619,17 +1801,15 @@ Include expected strong answers for each. Be realistic and challenging."""
                             ):
                                 if candidate_response.strip():
                                     with st.spinner("Evaluating…"):
-                                        eval_result = st.session_state.llm.invoke(
+                                        er = st.session_state.llm.invoke(
                                             f"""You are a hiring committee evaluator.
-Evaluate this candidate interview response.
-Response: {candidate_response}
-Return: Communication Score (1-10), Technical Depth (1-10), Confidence Level, Red Flags, Hiring Recommendation.
-Be specific and professional."""
+Evaluate this candidate interview response: {candidate_response}
+Return: Communication Score (1-10), Technical Depth (1-10), Confidence Level, Red Flags, Hiring Recommendation."""
                                         )
-                                        st.write(eval_result.content)
+                                        st.write(er.content)
                                         save_interview_eval_to_db(
                                             name,
-                                            eval_result.content,
+                                            er.content,
                                             st.session_state.current_user,
                                         )
                                         log_activity(f"Interview evaluated for: {name}")
@@ -1643,16 +1823,13 @@ Be specific and professional."""
                             if not req_analysis:
                                 st.info("No requirement data available.")
                             for r in req_analysis:
-                                if r["match_status"]:
-                                    st.markdown(
-                                        f"<div class='xai xai-y'>✅ <b>{r['requirement']}</b><br><small><i>Evidence: \"{r['evidence']}\"</i></small></div>",
-                                        unsafe_allow_html=True,
-                                    )
-                                else:
-                                    st.markdown(
-                                        f"<div class='xai xai-n'>❌ <b>{r['requirement']}</b><br><small><i>Reason: {r['evidence']}</i></small></div>",
-                                        unsafe_allow_html=True,
-                                    )
+                                cls = "xai-y" if r["match_status"] else "xai-n"
+                                icon = "✅" if r["match_status"] else "❌"
+                                label = "Evidence" if r["match_status"] else "Reason"
+                                st.markdown(
+                                    f"<div class='xai {cls}'>{icon} <b>{r['requirement']}</b><br><small><i>{label}: \"{r['evidence']}\"</i></small></div>",
+                                    unsafe_allow_html=True,
+                                )
 
                         if st.button(
                             "🎯 Generate Structured Interview Questions",
@@ -1680,10 +1857,8 @@ Be specific and professional."""
                         chat_area = st.container(height=220)
                         with chat_area:
                             for msg in st.session_state.chat_histories.get(name, []):
-                                role = msg["role"]
-                                content = msg["content"]
                                 st.markdown(
-                                    f"<div class='bubble {role}'>{content}</div>",
+                                    f"<div class='bubble {msg['role']}'>{msg['content']}</div>",
                                     unsafe_allow_html=True,
                                 )
 
@@ -1720,7 +1895,71 @@ Be specific and professional."""
                                 )
 
     # ════════════════════════════════════════════════════════════════════════
-    # TAB 2 — COMPARE
+    # ★ DAY 16 — FEATURE 5: KANBAN PIPELINE BOARD
+    # ════════════════════════════════════════════════════════════════════════
+    with tab_kanban:
+        st.markdown("### 🗂 Candidate Pipeline Board")
+        st.caption(
+            "Visual hiring pipeline — stages sync with the Leaderboard stage selector."
+        )
+        if not st.session_state.candidates:
+            st.info("Run an analysis first to see candidates on the board.")
+        else:
+            valid_c = [
+                c for c in st.session_state.candidates if "Error:" not in c["name"]
+            ]
+            stage_groups = {s: [] for s in KANBAN_STAGES}
+            for c in valid_c:
+                sg = st.session_state.kanban_stages.get(c["name"], "Applied")
+                stage_groups[sg].append(c)
+
+            kcols = st.columns(len(KANBAN_STAGES))
+            for col, stage in zip(kcols, KANBAN_STAGES):
+                color = kanban_color(stage)
+                members = stage_groups[stage]
+                with col:
+                    st.markdown(
+                        f"<div class='kanban-col'>"
+                        f"<div class='kanban-header' style='color:{color};border-color:{color}'>"
+                        f"{stage} <span style='font-weight:400;color:var(--muted)'>({len(members)})</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                    for c in members:
+                        s = clamp(c["overall_score"])
+                        bc_cls = "bh" if s >= 75 else ("bm" if s >= 50 else "bl")
+                        st.markdown(
+                            f"<div class='kanban-card'><b>{c['name']}</b><br>"
+                            f"<span class='badge {bc_cls}' style='font-size:.72rem;padding:2px 8px'>{s}/100</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+            st.markdown("---")
+            st.markdown("**⚡ Quick Stage Mover**")
+            mv1, mv2, mv3 = st.columns([3, 3, 1])
+            with mv1:
+                mc = st.selectbox(
+                    "Candidate",
+                    [c["name"] for c in valid_c],
+                    key="kanban_move_cand",
+                    label_visibility="collapsed",
+                )
+            with mv2:
+                ms = st.selectbox(
+                    "New Stage",
+                    KANBAN_STAGES,
+                    key="kanban_move_stage",
+                    label_visibility="collapsed",
+                )
+            with mv3:
+                if st.button("Move →", use_container_width=True):
+                    st.session_state.kanban_stages[mc] = ms
+                    log_activity(f"Kanban: {mc} → {ms}")
+                    st.toast(f"✅ {mc} moved to {ms}")
+                    st.rerun()
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB — COMPARE
     # ════════════════════════════════════════════════════════════════════════
     with tab2:
         valid = [
@@ -1790,7 +2029,7 @@ Give: strongest candidate, each strength and weakness, hiring recommendation, fi
                 st.info("Select at least one more candidate.")
 
     # ════════════════════════════════════════════════════════════════════════
-    # TAB 3 — EMAILS & REPORT
+    # TAB — EMAILS & REPORT
     # ════════════════════════════════════════════════════════════════════════
     with tab3:
         st.markdown("### ✉️ Email Generation Centre")
@@ -1830,7 +2069,7 @@ Give: strongest candidate, each strength and weakness, hiring recommendation, fi
                 log_activity("Email drafts generated")
             if st.session_state.get("generated_emails"):
                 st.markdown("---")
-                ic, rc = st.columns(2)
+                ic, rc2 = st.columns(2)
                 with ic:
                     st.markdown("#### ✅ Invitations")
                     for em in st.session_state.generated_emails.get("invitations", []):
@@ -1838,7 +2077,7 @@ Give: strongest candidate, each strength and weakness, hiring recommendation, fi
                             st.code(em["email_body"], language=None)
                     if not st.session_state.generated_emails.get("invitations"):
                         st.info("No candidates met the score threshold.")
-                with rc:
+                with rc2:
                     st.markdown("#### ❌ Rejections")
                     for em in st.session_state.generated_emails.get("rejections", []):
                         with st.expander(f"To: {em['name']}", expanded=True):
@@ -1899,6 +2138,77 @@ Keep it executive-style and concise."""
                         st.warning(f"PDF export failed: {e}")
                 else:
                     st.info("Install `reportlab` to enable PDF export.")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ★ DAY 16 — FEATURE 6: ADMIN CONTROL PANEL
+    # ════════════════════════════════════════════════════════════════════════
+    if has_perm("admin") and tab_admin is not None:
+        with tab_admin:
+            st.markdown("### 🔐 Admin Control Panel")
+            st.caption("Full platform oversight — only visible to Admin role.")
+
+            st.markdown("#### 📊 Platform Database Stats")
+            db_stats = get_admin_db_stats()
+            stat_items = [
+                ("candidates", "👥 Total Candidates"),
+                ("notes", "📝 Recruiter Notes"),
+                ("email_log", "✉️ Emails Logged"),
+                ("scheduled_interviews", "📅 Scheduled Interviews"),
+                ("bookmarks", "🔖 Bookmarks"),
+                ("collab_comments", "💬 Team Comments"),
+                ("interview_evaluations", "🎤 Interview Evals"),
+            ]
+            cols7 = st.columns(4)
+            for idx, (table, label) in enumerate(stat_items):
+                with cols7[idx % 4]:
+                    st.markdown(
+                        f"<div class='admin-stat'><div class='admin-stat-val'>{db_stats.get(table,0)}</div>"
+                        f"<div class='admin-stat-lbl'>{label}</div></div>",
+                        unsafe_allow_html=True,
+                    )
+
+            st.markdown("---")
+            st.markdown("#### 👥 Registered Recruiter Accounts")
+            for uname, udata in RECRUITER_ACCOUNTS.items():
+                rb2 = role_badge_cls(udata["role"])
+                st.markdown(
+                    f"<div class='mem-card'><b>{udata['name']}</b> "
+                    f"<span class='role-badge {rb2}'>{udata['role']}</span><br>"
+                    f"<small style='color:var(--muted)'>Login: <code>{uname}</code> &nbsp;·&nbsp; "
+                    f"Permissions: {' · '.join(udata['permissions'])}</small></div>",
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("---")
+            st.markdown("#### ⚙️ Session Management")
+            adm1, adm2 = st.columns(2)
+            with adm1:
+                if st.button("🗑 Clear Activity Log", use_container_width=True):
+                    st.session_state.activity_log = []
+                    st.success("✅ Activity log cleared.")
+            with adm2:
+                if st.button("♻️ Reset Kanban Board", use_container_width=True):
+                    for k in st.session_state.kanban_stages:
+                        st.session_state.kanban_stages[k] = "Applied"
+                    st.success("✅ Kanban board reset to Applied.")
+
+            st.markdown("---")
+            st.markdown("#### 🔒 Role Permission Matrix")
+            st.table(
+                {
+                    "Feature": [
+                        "Upload & Screen",
+                        "Results & Leaderboard",
+                        "Analytics Dashboard",
+                        "JD Optimizer",
+                        "Team Collaboration",
+                        "Admin Panel",
+                    ],
+                    "Recruiter": ["✅", "✅", "❌", "❌", "✅", "❌"],
+                    "Manager": ["✅", "✅", "✅", "✅", "✅", "❌"],
+                    "Admin": ["✅", "✅", "✅", "✅", "✅", "✅"],
+                }
+            )
 
     # ════════════════════════════════════════════════════════════════════════
     # ACTIVITY LOG
